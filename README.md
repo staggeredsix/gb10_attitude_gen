@@ -59,7 +59,7 @@ Build the image (requires NVIDIA GPU drivers):
 docker build -t ai-mood-mirror .
 ```
 
-Run with compose (shares X11 display and `/dev/video0`):
+Run with compose (shares X11 display and `/dev/video0`, exposes the web UI on `0.0.0.0:8000`):
 
 ```bash
 docker compose up

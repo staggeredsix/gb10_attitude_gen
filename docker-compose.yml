@@ -2,6 +2,7 @@ version: "3.9"
 services:
   ai-mood-mirror:
     build: .
+    command: ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_VISIBLE_DEVICES=all
