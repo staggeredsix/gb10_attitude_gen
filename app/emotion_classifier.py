@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import cv2
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,15 +27,15 @@ class EmotionClassifier:
     def __init__(self, model_name: str, device: str) -> None:
         self.device = device
         LOGGER.info("Loading emotion classifier: %s on %s", model_name, device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name).to(self.device)
+        self.image_processor = AutoImageProcessor.from_pretrained(model_name)
+        self.model = AutoModelForImageClassification.from_pretrained(model_name).to(self.device)
 
     def classify(self, face_img: cv2.typing.MatLike) -> Optional[str]:
         """Return the predicted emotion for the provided face image."""
         try:
             resized = cv2.resize(face_img, (224, 224))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            inputs = self.tokenizer(images=rgb, return_tensors="pt").to(self.device)
+            inputs = self.image_processor(images=rgb, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 logits = self.model(**inputs).logits
             idx = logits.softmax(dim=-1).argmax().item()
