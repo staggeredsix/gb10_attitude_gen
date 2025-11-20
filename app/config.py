@@ -1,0 +1,106 @@
+"""Configuration management for AI Mood Mirror application."""
+from __future__ import annotations
+
+import argparse
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+
+
+ENV_PREFIX = "AI_MOOD_MIRROR_"
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass
+class AppConfig:
+    """Runtime configuration for the application."""
+
+    camera_index: int = 0
+    emotion_model: str = "trpakov/vit-face-expression"
+    diffusion_model: str = "stabilityai/sdxl-turbo"
+    detection_confidence: float = 0.5
+    generation_interval: float = 3.0
+    use_cuda: bool = torch.cuda.is_available()
+    show_windows: bool = True
+    server_host: str = "0.0.0.0"
+    server_port: int = 8000
+
+    @property
+    def device(self) -> str:
+        """Return the torch device string based on availability and config."""
+        if self.use_cuda and torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """Parse command-line arguments for the application."""
+
+    parser = argparse.ArgumentParser(description="AI Mood Mirror")
+    parser.add_argument("--camera-index", type=int, help="Index of the webcam to use")
+    parser.add_argument("--emotion-model", type=str, help="Hugging Face model id for emotion classification")
+    parser.add_argument("--diffusion-model", type=str, help="Model id for diffusion image generation")
+    parser.add_argument("--detection-confidence", type=float, help="Minimum confidence for face detection")
+    parser.add_argument("--generation-interval", type=float, help="Seconds between portrait generations")
+    parser.add_argument("--use-cuda", dest="use_cuda", action="store_true", help="Force use of CUDA if available")
+    parser.add_argument("--no-cuda", dest="use_cuda", action="store_false", help="Disable CUDA usage")
+    parser.add_argument("--no-ui", dest="show_windows", action="store_false", help="Disable OpenCV windows (headless)")
+    parser.add_argument("--host", type=str, help="Host for the web UI server")
+    parser.add_argument("--port", type=int, help="Port for the web UI server")
+    parser.set_defaults(use_cuda=None, show_windows=True)
+    return parser.parse_args(argv)
+
+
+def load_config(args: argparse.Namespace) -> AppConfig:
+    """Create an AppConfig from CLI args and environment variables."""
+
+    env_camera = os.getenv(f"{ENV_PREFIX}CAMERA_INDEX")
+    env_emotion_model = os.getenv(f"{ENV_PREFIX}EMOTION_MODEL")
+    env_diffusion_model = os.getenv(f"{ENV_PREFIX}DIFFUSION_MODEL")
+    env_detection_conf = os.getenv(f"{ENV_PREFIX}DETECTION_CONFIDENCE")
+    env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
+    env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available())
+    env_host = os.getenv(f"{ENV_PREFIX}HOST")
+    env_port = os.getenv(f"{ENV_PREFIX}PORT")
+
+    camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
+    emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "trpakov/vit-face-expression"
+    diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "stabilityai/sdxl-turbo"
+    detection_confidence = (
+        args.detection_confidence
+        if args.detection_confidence is not None
+        else float(env_detection_conf) if env_detection_conf else 0.5
+    )
+    generation_interval = (
+        args.generation_interval
+        if args.generation_interval is not None
+        else float(env_gen_interval) if env_gen_interval else 3.0
+    )
+
+    use_cuda = env_use_cuda if args.use_cuda is None else args.use_cuda
+    show_windows = args.show_windows
+    server_host = args.host if args.host else env_host or "0.0.0.0"
+    server_port = args.port if args.port is not None else int(env_port) if env_port else 8000
+
+    return AppConfig(
+        camera_index=camera_index,
+        emotion_model=emotion_model,
+        diffusion_model=diffusion_model,
+        detection_confidence=detection_confidence,
+        generation_interval=generation_interval,
+        use_cuda=use_cuda,
+        show_windows=show_windows,
+        server_host=server_host,
+        server_port=server_port,
+    )
+
+
+__all__ = ["AppConfig", "parse_args", "load_config"]
