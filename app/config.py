@@ -31,7 +31,7 @@ class AppConfig:
     controlnet_model: str = "lllyasviel/sd-controlnet-canny"
     detection_confidence: float = 0.5
     generation_interval: float = 3.0
-    use_cuda: bool = torch.cuda.is_available()
+    use_cuda: bool = torch.cuda.is_available() or torch.backends.mps.is_available()
     show_windows: bool = True
     server_host: str = "0.0.0.0"
     server_port: int = 8000
@@ -43,23 +43,25 @@ class AppConfig:
     @property
     def device(self) -> str:
         """Return the torch device string based on availability and config."""
-        if self.use_cuda:
-            if torch.cuda.is_available():
-                name = torch.cuda.get_device_name(0)
-                capability = torch.cuda.get_device_capability(0)
-                LOGGER.info("CUDA available: %s (compute capability %s.%s)", name, *capability)
-                return "cuda"
+        if not self.use_cuda:
+            LOGGER.error("GPU execution is required; CPU-only mode is not supported")
+            raise RuntimeError("GPU execution is required")
 
-            if torch.backends.mps.is_available():
-                LOGGER.info("Metal Performance Shaders backend detected; using MPS")
-                return "mps"
+        if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+            capability = torch.cuda.get_device_capability(0)
+            LOGGER.info("CUDA available: %s (compute capability %s.%s)", name, *capability)
+            return "cuda"
 
-            LOGGER.warning(
-                "GPU requested but PyTorch reports no CUDA or MPS devices; falling back to CPU."
-                " Ensure a GPU-compatible PyTorch wheel is installed and the runtime has GPU access."
-            )
+        if torch.backends.mps.is_available():
+            LOGGER.info("Metal Performance Shaders backend detected; using MPS")
+            return "mps"
 
-        return "cpu"
+        LOGGER.error(
+            "GPU execution requested but no CUDA or MPS devices are available; aborting startup."
+            " Ensure a GPU-compatible PyTorch wheel is installed and the runtime has GPU access."
+        )
+        raise RuntimeError("GPU device not available")
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -114,7 +116,9 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_controlnet_model = os.getenv(f"{ENV_PREFIX}CONTROLNET_MODEL")
     env_detection_conf = os.getenv(f"{ENV_PREFIX}DETECTION_CONFIDENCE")
     env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
-    env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available())
+    env_use_cuda = _bool_env(
+        f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available() or torch.backends.mps.is_available()
+    )
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
     env_default_mode = os.getenv(f"{ENV_PREFIX}DEFAULT_MODE") or os.getenv("DEFAULT_MODE")
