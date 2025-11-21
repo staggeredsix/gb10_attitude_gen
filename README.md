@@ -76,8 +76,17 @@ docker run --rm -it \
   ai-mood-mirror-web --host 0.0.0.0 --port 8000
 ```
 
+### Deployment scripts
+
+- **Single node:** `./scripts/single_spark.sh` builds the image locally and launches the web UI on the current machine (defaults to port `8000`).
+- **Dual node:** `VISION_HOST=<dgx1> DIFFUSION_HOST=<dgx2> ./scripts/dual_spark.sh` configures the dual 100G ports, syncs the repo to each host, builds the container, and runs a quick connectivity/GPU sanity check.
+
 ## Notes
 
 - GPU acceleration is used when available and enabled; otherwise, models run on CPU.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
+
+## Cluster-accelerated demo concept
+
+Looking for a larger, more visual showcase? See [`docs/cluster_accelerated_mind_mirror.md`](docs/cluster_accelerated_mind_mirror.md) for a two-DGX design that streams webcam input to a vision stack on DGX #1 (VLM-based face+emotion) and ships tensors over dual 100 Gb links to DGX #2 for diffusion rendering at 10–20 FPS.
