@@ -47,6 +47,21 @@ DOCKER_BUILDKIT=1 docker build -t "${IMAGE_TAG}" "${REPO_ROOT}"
 echo "[info] Starting ai-mood-mirror on port ${PORT}"
 IMAGE_TAG="${IMAGE_TAG}" PORT="${PORT}" ROLE="${ROLE}" DEFAULT_MODE="${DEFAULT_MODE}" docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d --force-recreate
 
+echo "[info] Verifying GPU visibility from inside the container"
+if ! docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T ai-mood-mirror python3 - <<'PY'
+import torch
+
+print({
+    "cuda_available": torch.cuda.is_available(),
+    "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+    "mps_available": torch.backends.mps.is_available(),
+})
+PY
+then
+  echo "[error] GPU check failed inside the container; review Docker + driver setup" >&2
+  exit 1
+fi
+
 echo "[ok] Single-node stack is live"
-echo "     URL: http://localhost:${PORT}" 
+echo "     URL: http://localhost:${PORT}"
 echo "     To view logs: docker compose -f ${REPO_ROOT}/docker-compose.yml logs -f"

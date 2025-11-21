@@ -76,6 +76,13 @@ Run with compose (exposes the web UI on `0.0.0.0:8000` and lets the browser acce
 docker compose up
 ```
 
+The compose file explicitly reserves NVIDIA GPUs (`deploy.resources.reservations.devices`) and sets `NVIDIA_VISIBLE_DEVICES=all`.
+If startup fails with "GPU execution is required", confirm GPU visibility from inside the container:
+
+```bash
+docker compose exec -T ai-mood-mirror python3 -c "import torch; print({'cuda_available': torch.cuda.is_available(), 'cuda_device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None})"
+```
+
 Or run directly (backend does **not** need webcam access—your browser provides the video stream):
 
 ```bash
