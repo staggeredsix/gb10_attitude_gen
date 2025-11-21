@@ -71,10 +71,25 @@ Build the image (requires NVIDIA GPU drivers). The Dockerfile uses the CUDA 13 r
 docker build -t ai-mood-mirror .
 ```
 
+If your Hugging Face models require authentication, pass a token at build time so snapshots can download during the image build (the token is not persisted in the final image):
+
+```bash
+docker build -t ai-mood-mirror . \
+  --build-arg HUGGINGFACE_TOKEN=<hf_token>
+# or --build-arg HF_TOKEN / --build-arg HUGGINGFACE_HUB_TOKEN
+```
+
 Run with compose (exposes the web UI on `0.0.0.0:8000` and lets the browser access your webcam):
 
 ```bash
 docker compose up
+```
+
+To forward the same token through the compose build, export it locally before running compose:
+
+```bash
+export HUGGINGFACE_TOKEN=<hf_token>
+docker compose up --build
 ```
 
 The compose file explicitly reserves NVIDIA GPUs (`deploy.resources.reservations.devices`) and sets `NVIDIA_VISIBLE_DEVICES=all`.

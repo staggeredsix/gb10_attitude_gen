@@ -1,5 +1,9 @@
 FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
 
+ARG HUGGINGFACE_TOKEN
+ARG HF_TOKEN
+ARG HUGGINGFACE_HUB_TOKEN
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_INDEX_URL=https://download.pytorch.org/whl/nightly/cu130 \
@@ -21,8 +25,9 @@ COPY app ./app
 
 RUN pip install --upgrade pip && \
     pip install . && \
-    python3 - <<'PY'
+    HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN} HF_TOKEN=${HF_TOKEN} HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN} python3 - <<'PY'
 from huggingface_hub import snapshot_download
+import os
 
 models = [
     ("emotion", "Qwen/Qwen2-VL-2B-Instruct"),
@@ -31,9 +36,14 @@ models = [
     ("face-segmentation", "briaai/RMBG-1.4"),
 ]
 
+token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
 for label, repo in models:
     print(f"[preload] downloading {label}: {repo}")
-    snapshot_download(repo_id=repo, local_files_only=False)
+    download_kwargs = {"repo_id": repo, "local_files_only": False}
+    if token:
+        download_kwargs["token"] = token
+    snapshot_download(**download_kwargs)
 PY
 
 CMD ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]

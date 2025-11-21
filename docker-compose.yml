@@ -2,7 +2,12 @@ version: "3.9"
 services:
   ai-mood-mirror:
     image: "${IMAGE_TAG:-ai-mood-mirror:latest}"
-    build: .
+    build:
+      context: .
+      args:
+        HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+        HF_TOKEN: ${HF_TOKEN:-}
+        HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN:-}
     command: ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
