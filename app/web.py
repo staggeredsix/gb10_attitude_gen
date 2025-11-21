@@ -152,7 +152,7 @@ def _build_html() -> str:
                     const stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
                     video.srcObject = stream;
                 }} catch (err) {{
-                    statusEl.textContent = `Camera error: ${{err}}`;
+                    statusEl.textContent = 'Camera error: ' + err;
                     throw err;
                 }}
             }}
