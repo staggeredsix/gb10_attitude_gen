@@ -1,7 +1,9 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_INDEX_URL=https://download.pytorch.org/whl/cu130 \
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \

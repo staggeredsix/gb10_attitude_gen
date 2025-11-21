@@ -115,60 +115,301 @@ def _build_html() -> str:
         <meta charset=\"utf-8\" />
         <title>AI Mood Mirror - Web</title>
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            .row {{ display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }}
-            video, img {{ border: 1px solid #ccc; max-width: 420px; height: auto; }}
-            #status {{ margin-top: 10px; font-weight: bold; }}
+            :root {{
+                --nvidia-green: #76b900;
+                --nvidia-dark: #0a0f0d;
+                --nvidia-gray: #1a1f1d;
+                --text-primary: #e8f3e8;
+                --text-muted: #9fb09e;
+                --card-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+                --border-color: rgba(118, 185, 0, 0.35);
+            }}
+
+            * {{ box-sizing: border-box; }}
+
+            body {{
+                margin: 0;
+                min-height: 100vh;
+                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                background: radial-gradient(circle at 20% 20%, rgba(118, 185, 0, 0.1), transparent 25%),
+                            radial-gradient(circle at 80% 0%, rgba(118, 185, 0, 0.12), transparent 20%),
+                            linear-gradient(135deg, #0b1510, #040806 55%, #0a0f0d 100%);
+                color: var(--text-primary);
+            }}
+
+            header {{
+                padding: 32px 28px 8px;
+            }}
+
+            .eyebrow {{
+                display: inline-flex;
+                gap: 8px;
+                align-items: center;
+                padding: 8px 12px;
+                background: rgba(118, 185, 0, 0.16);
+                border: 1px solid var(--border-color);
+                border-radius: 999px;
+                color: var(--text-primary);
+                letter-spacing: 0.03em;
+                text-transform: uppercase;
+                font-weight: 600;
+                font-size: 12px;
+            }}
+
+            h1 {{
+                margin: 12px 0 6px;
+                font-size: 32px;
+                letter-spacing: -0.02em;
+            }}
+
+            .subhead {{
+                margin: 0 0 10px;
+                color: var(--text-muted);
+                max-width: 720px;
+                line-height: 1.5;
+            }}
+
+            main {{
+                padding: 0 28px 32px;
+            }}
+
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                gap: 20px;
+                align-items: start;
+            }}
+
+            .card {{
+                background: linear-gradient(145deg, rgba(26, 31, 29, 0.75), rgba(12, 16, 14, 0.8));
+                border: 1px solid rgba(255, 255, 255, 0.04);
+                border-radius: 16px;
+                padding: 18px 18px 20px;
+                box-shadow: var(--card-shadow);
+                backdrop-filter: blur(10px);
+            }}
+
+            .card h3 {{
+                margin: 4px 0 6px;
+                font-size: 18px;
+                letter-spacing: 0.01em;
+            }}
+
+            .card p {{
+                margin: 0 0 12px;
+                color: var(--text-muted);
+                line-height: 1.4;
+            }}
+
+            .upload {{
+                border: 1px dashed var(--border-color);
+                border-radius: 14px;
+                padding: 14px;
+                background: rgba(118, 185, 0, 0.04);
+            }}
+
+            .upload label {{
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 10px 14px;
+                background: var(--nvidia-green);
+                color: #0b0f0c;
+                border-radius: 12px;
+                font-weight: 700;
+                cursor: pointer;
+                transition: transform 0.1s ease, box-shadow 0.1s ease;
+                box-shadow: 0 10px 20px rgba(118, 185, 0, 0.35);
+            }}
+
+            .upload label:hover {{
+                transform: translateY(-1px);
+            }}
+
+            .upload input {{
+                display: none;
+            }}
+
+            .meta-row {{
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+                align-items: center;
+                margin: 12px 0;
+            }}
+
+            select {{
+                background: var(--nvidia-gray);
+                color: var(--text-primary);
+                border: 1px solid var(--border-color);
+                border-radius: 10px;
+                padding: 10px 12px;
+                font-weight: 600;
+                min-width: 170px;
+            }}
+
+            button {{
+                background: linear-gradient(135deg, var(--nvidia-green), #95e000);
+                border: none;
+                color: #0b0f0c;
+                border-radius: 12px;
+                padding: 11px 16px;
+                font-weight: 800;
+                letter-spacing: 0.01em;
+                cursor: pointer;
+                min-width: 160px;
+                box-shadow: 0 12px 24px rgba(118, 185, 0, 0.35);
+                transition: transform 0.12s ease, box-shadow 0.12s ease;
+            }}
+
+            button:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 16px 30px rgba(118, 185, 0, 0.45);
+            }}
+
+            button:disabled {{
+                background: #4a6142;
+                color: #d7e5d6;
+                cursor: not-allowed;
+                box-shadow: none;
+                transform: none;
+            }}
+
+            .preview {{
+                width: 100%;
+                max-width: 500px;
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.04);
+                background: #070a07;
+                box-shadow: inset 0 0 0 1px rgba(118, 185, 0, 0.08);
+                min-height: 280px;
+                object-fit: contain;
+            }}
+
+            .status {{
+                margin-top: 8px;
+                display: inline-flex;
+                align-items: center;
+                gap: 10px;
+                padding: 10px 14px;
+                border-radius: 999px;
+                background: rgba(118, 185, 0, 0.12);
+                border: 1px solid var(--border-color);
+                color: var(--text-primary);
+                font-weight: 600;
+                box-shadow: 0 10px 18px rgba(0, 0, 0, 0.25);
+            }}
+
+            .status-dot {{
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                background: var(--nvidia-green);
+                box-shadow: 0 0 12px rgba(118, 185, 0, 0.8);
+            }}
+
+            footer {{
+                color: var(--text-muted);
+                text-align: center;
+                padding: 16px;
+                font-size: 13px;
+            }}
         </style>
     </head>
     <body>
-        <h2>AI Mood Mirror</h2>
-        <div class=\"row\">
-            <div>
-                <p>Webcam feed</p>
-                <video id=\"video\" autoplay playsinline width=\"420\" height=\"315\"></video>
-                <div>
-                    <label for=\"style\">Style template:</label>
-                    <select id=\"style\">{options}</select>
-                </div>
-                <p id=\"status\">Connecting...</p>
+        <header>
+            <div class=\"eyebrow\">NVIDIA Inspired</div>
+            <h1>AI Mood Mirror</h1>
+            <p class=\"subhead\">Upload a portrait to detect the dominant emotion and generate an NVIDIA-inspired artwork. No webcam access is requested.</p>
+        </header>
+
+        <main>
+            <div class=\"grid\">
+                <section class=\"card\">
+                    <h3>1 · Upload a face photo</h3>
+                    <p>Select a recent portrait. The image stays on your machine until you click "Send to AI".</p>
+                    <div class=\"upload\">
+                        <label for=\"photo\">📤 Choose image</label>
+                        <input type=\"file\" id=\"photo\" accept=\"image/*\" />
+                        <div class=\"meta-row\">
+                            <div>
+                                <label for=\"style\">Style template</label><br />
+                                <select id=\"style\">{options}</select>
+                            </div>
+                            <button id=\"send\" disabled>Send to AI</button>
+                        </div>
+                    </div>
+                    <div class=\"status\" id=\"status\">
+                        <span class=\"status-dot\"></span>
+                        <span>Connecting...</span>
+                    </div>
+                </section>
+
+                <section class=\"card\">
+                    <h3>2 · Preview & Results</h3>
+                    <p>Review your uploaded image and see the generated NVIDIA-flavored portrait.</p>
+                    <img id=\"preview\" class=\"preview\" alt=\"Your selected image preview\" />
+                    <img id=\"portrait\" class=\"preview\" style=\"margin-top:12px;\" alt=\"Generated portrait will appear here\" />
+                </section>
             </div>
-            <div>
-                <p>AI Mood Portrait</p>
-                <img id=\"portrait\" width=\"420\" height=\"315\" alt=\"Generated portrait will appear here\" />
-            </div>
-        </div>
-        <canvas id=\"canvas\" width=\"320\" height=\"240\" style=\"display:none;\"></canvas>
+        </main>
+
+        <footer>
+            Built for private, on-device exploration — we never request webcam access.
+        </footer>
+
+        <canvas id=\"canvas\" width=\"360\" height=\"270\" style=\"display:none;\"></canvas>
         <script>
-            const video = document.getElementById('video');
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
             const statusEl = document.getElementById('status');
+            const statusText = statusEl.querySelector('span:last-child');
             const portrait = document.getElementById('portrait');
+            const preview = document.getElementById('preview');
             const styleSelect = document.getElementById('style');
+            const photoInput = document.getElementById('photo');
+            const sendBtn = document.getElementById('send');
 
-            async function startCamera() {{
-                try {{
-                    const stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
-                    video.srcObject = stream;
-                }} catch (err) {{
-                    statusEl.textContent = 'Camera error: ' + err;
-                    throw err;
-                }}
+            let socket;
+            let ready = false;
+            let pendingDataUrl = null;
+
+            function setStatus(message, connected = ready) {{
+                statusText.textContent = message;
+                statusEl.querySelector('.status-dot').style.background = connected ? 'var(--nvidia-green)' : '#b94c00';
+            }}
+
+            async function downscaleImage(dataUrl) {{
+                return new Promise((resolve, reject) => {{
+                    const img = new Image();
+                    img.onload = () => {{
+                        const maxWidth = 360;
+                        const maxHeight = 270;
+                        const scale = Math.min(maxWidth / img.width, maxHeight / img.height, 1);
+                        canvas.width = img.width * scale;
+                        canvas.height = img.height * scale;
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.82));
+                    }};
+                    img.onerror = reject;
+                    img.src = dataUrl;
+                }});
             }}
 
             function openSocket() {{
-                const socket = new WebSocket(`ws://${{location.host}}/ws`);
-                let ready = false;
+                socket = new WebSocket(`ws://${{location.host}}/ws`);
 
                 socket.onopen = () => {{
-                    statusEl.textContent = 'Connected';
                     ready = true;
+                    sendBtn.disabled = !pendingDataUrl;
+                    setStatus('Connected. Upload an image to begin.');
                 }};
 
                 socket.onclose = () => {{
                     ready = false;
-                    statusEl.textContent = 'Disconnected';
+                    sendBtn.disabled = true;
+                    setStatus('Disconnected. Reconnecting...', false);
                     setTimeout(openSocket, 1000);
                 }};
 
@@ -179,32 +420,45 @@ def _build_html() -> str:
                 socket.onmessage = (event) => {{
                     const payload = JSON.parse(event.data);
                     if (payload.emotion) {{
-                        statusEl.textContent = `Emotion: ${{payload.emotion}}`;
+                        setStatus(`Emotion: ${{payload.emotion}}`);
                     }} else {{
-                        statusEl.textContent = 'No face detected';
+                        setStatus('No face detected');
                     }}
                     if (payload.generated_image) {{
                         portrait.src = `data:image/jpeg;base64,${{payload.generated_image}}`;
                     }}
                 }};
-
-                function pushFrame() {{
-                    if (!ready) {{
-                        return;
-                    }}
-                    try {{
-                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-                        socket.send(JSON.stringify({{ frame: dataUrl, style: styleSelect.value }}));
-                    }} catch (err) {{
-                        console.error('Frame send failed', err);
-                    }}
-                }}
-
-                setInterval(pushFrame, 500);
             }}
 
-            startCamera().then(openSocket).catch(() => {{}});
+            photoInput.addEventListener('change', async (event) => {{
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = async () => {{
+                    pendingDataUrl = await downscaleImage(reader.result);
+                    preview.src = pendingDataUrl;
+                    setStatus('Image ready. Click "Send to AI".');
+                    sendBtn.disabled = !ready;
+                }};
+                reader.readAsDataURL(file);
+            }});
+
+            sendBtn.addEventListener('click', () => {{
+                if (!ready) {{
+                    setStatus('Connecting to server, please wait...', false);
+                    return;
+                }}
+                if (!pendingDataUrl) {{
+                    setStatus('Upload an image first.');
+                    return;
+                }}
+
+                setStatus('Processing...');
+                socket.send(JSON.stringify({{ frame: pendingDataUrl, style: styleSelect.value }}));
+            }});
+
+            openSocket();
         </script>
     </body>
     </html>
