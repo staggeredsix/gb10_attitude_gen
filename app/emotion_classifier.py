@@ -45,7 +45,11 @@ class EmotionClassifier:
             LOGGER.error("Emotion VLM requires a GPU device; got %s", device)
             raise RuntimeError("GPU execution is required for emotion analysis")
 
-        dtype = torch.float16 if device == "mps" else torch.bfloat16
+        if device == "cuda" and not torch.cuda.is_bf16_supported():
+            LOGGER.info("BF16 not supported on this CUDA device; using float16 for emotion VLM")
+            dtype = torch.float16
+        else:
+            dtype = torch.float16 if device == "mps" else torch.bfloat16
         self.device = device
 
         LOGGER.info("Loading emotion VLM: %s on %s", model_name, device)

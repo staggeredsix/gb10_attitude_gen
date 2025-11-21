@@ -38,7 +38,11 @@ class ImageGenerator:
             raise RuntimeError("GPU execution is required for diffusion")
 
         self.device = device
-        dtype = torch.bfloat16 if self.device == "cuda" else torch.float16
+        if self.device == "cuda" and not torch.cuda.is_bf16_supported():
+            LOGGER.info("BF16 not supported on this CUDA device; using float16 for diffusion")
+            dtype = torch.float16
+        else:
+            dtype = torch.bfloat16 if self.device == "cuda" else torch.float16
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
