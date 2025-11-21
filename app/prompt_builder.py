@@ -16,7 +16,7 @@ STYLE_MAP: Dict[str, str] = {
 
 
 def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
-    """Return a stable diffusion prompt given an emotion and style template."""
+    """Return a flux diffusion prompt given an emotion and style template."""
 
     style = STYLE_MAP.get(style_key or emotion, STYLE_MAP.get("cinematic", "cinematic dramatic portrait"))
     return (
