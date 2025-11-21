@@ -35,7 +35,9 @@ def run(config: AppConfig) -> None:
     try:
         classifier = EmotionClassifier(config.emotion_model, config.device)
         detector = FaceDetector(min_confidence=config.detection_confidence)
-        generator = ImageGenerator(config.diffusion_model, config.device)
+        generator = ImageGenerator(
+            config.diffusion_model, config.controlnet_model, config.device
+        )
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Failed to initialize models: %s", exc)
         return

@@ -27,7 +27,8 @@ class AppConfig:
 
     camera_index: int = 0
     emotion_model: str = "trpakov/vit-face-expression"
-    diffusion_model: str = "stabilityai/sdxl-turbo"
+    diffusion_model: str = "runwayml/stable-diffusion-v1-5"
+    controlnet_model: str = "lllyasviel/sd-controlnet-canny"
     detection_confidence: float = 0.5
     generation_interval: float = 3.0
     use_cuda: bool = torch.cuda.is_available()
@@ -63,6 +64,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--camera-index", type=int, help="Index of the webcam to use")
     parser.add_argument("--emotion-model", type=str, help="Hugging Face model id for emotion classification")
     parser.add_argument("--diffusion-model", type=str, help="Model id for diffusion image generation")
+    parser.add_argument(
+        "--controlnet-model",
+        type=str,
+        help="Model id for the ControlNet used to condition generation on the webcam image",
+    )
     parser.add_argument("--detection-confidence", type=float, help="Minimum confidence for face detection")
     parser.add_argument("--generation-interval", type=float, help="Seconds between portrait generations")
     parser.add_argument("--use-cuda", dest="use_cuda", action="store_true", help="Force use of CUDA if available")
@@ -100,6 +106,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_camera = os.getenv(f"{ENV_PREFIX}CAMERA_INDEX")
     env_emotion_model = os.getenv(f"{ENV_PREFIX}EMOTION_MODEL")
     env_diffusion_model = os.getenv(f"{ENV_PREFIX}DIFFUSION_MODEL")
+    env_controlnet_model = os.getenv(f"{ENV_PREFIX}CONTROLNET_MODEL")
     env_detection_conf = os.getenv(f"{ENV_PREFIX}DETECTION_CONFIDENCE")
     env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
     env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available())
@@ -113,7 +120,8 @@ def load_config(args: argparse.Namespace) -> AppConfig:
 
     camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
     emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "trpakov/vit-face-expression"
-    diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "stabilityai/sdxl-turbo"
+    diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "runwayml/stable-diffusion-v1-5"
+    controlnet_model = args.controlnet_model if args.controlnet_model else env_controlnet_model or "lllyasviel/sd-controlnet-canny"
     detection_confidence = (
         args.detection_confidence
         if args.detection_confidence is not None
@@ -138,6 +146,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         camera_index=camera_index,
         emotion_model=emotion_model,
         diffusion_model=diffusion_model,
+        controlnet_model=controlnet_model,
         detection_confidence=detection_confidence,
         generation_interval=generation_interval,
         use_cuda=use_cuda,
