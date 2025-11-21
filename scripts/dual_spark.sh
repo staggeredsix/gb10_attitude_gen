@@ -97,6 +97,11 @@ sanity_checks() {
   run_remote "$DIFFUSION_HOST" "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader" || echo "[warn] Unable to query GPU on ${DIFFUSION_HOST}" >&2
   run_remote "$VISION_HOST" "nc -zv ${DIFFUSION_HOST} ${PORT}" || echo "[warn] TCP connectivity check failed vision->diffusion on port ${PORT}" >&2
   run_remote "$DIFFUSION_HOST" "nc -zv ${VISION_HOST} ${PORT}" || echo "[warn] TCP connectivity check failed diffusion->vision on port ${PORT}" >&2
+  for check_host in "$VISION_HOST" "$DIFFUSION_HOST"; do
+    echo "[info] Inspecting GPU visibility inside container on ${check_host}"
+    run_remote "$check_host" "cd ${REMOTE_DIR} && docker compose exec -T ai-mood-mirror python3 -c \"import json, torch; print(json.dumps({'cuda_available': torch.cuda.is_available(), 'cuda_device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, 'mps_available': torch.backends.mps.is_available()}))\"" \
+      || echo "[warn] Unable to verify GPU inside container on ${check_host}" >&2
+  done
 }
 
 echo "[step] Configuring dual 100G fabric"
