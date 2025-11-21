@@ -21,7 +21,7 @@ class ImageGenerator:
         self.device = device
         dtype = torch.float16 if device == "cuda" else torch.float32
         LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, device)
-        kwargs = {"dtype": dtype}
+        kwargs = {"torch_dtype": dtype}
         if dtype == torch.float16:
             kwargs["variant"] = "fp16"
         self.pipe = AutoPipelineForImage2Image.from_pretrained(
