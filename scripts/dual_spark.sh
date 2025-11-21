@@ -14,6 +14,7 @@ MTU="${MTU:-9000}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/ai-mood-mirror}"
 IMAGE_TAG="${IMAGE_TAG:-ai-mood-mirror:dual}"
 PORT="${PORT:-8000}"
+DEFAULT_MODE="${DEFAULT_MODE:-dual}"
 
 usage() {
   cat <<USAGE
@@ -29,6 +30,7 @@ Optional env vars:
   REMOTE_DIR        Path on the remote hosts to deploy the repo (default: /opt/ai-mood-mirror)
   IMAGE_TAG         Docker image tag to use/build (default: ai-mood-mirror:dual)
   PORT              Port to expose the web UI on (default: 8000)
+  DEFAULT_MODE      Default inference mode surfaced in the web UI (default: dual)
 
 Prereqs: ssh, rsync, docker, docker compose, sudo access on both hosts, NVIDIA Container Toolkit.
 USAGE
@@ -86,7 +88,7 @@ build_and_launch() {
   echo "[info] Building image on ${host} (${role})"
   run_remote "$host" "cd ${REMOTE_DIR} && DOCKER_BUILDKIT=1 IMAGE_TAG=${IMAGE_TAG} docker build -t ${IMAGE_TAG} ."
   echo "[info] Starting service on ${host} (${role})"
-  run_remote "$host" "cd ${REMOTE_DIR} && IMAGE_TAG=${IMAGE_TAG} PORT=${PORT} ROLE=${role} docker compose up -d --force-recreate"
+  run_remote "$host" "cd ${REMOTE_DIR} && IMAGE_TAG=${IMAGE_TAG} PORT=${PORT} ROLE=${role} DEFAULT_MODE=${DEFAULT_MODE} docker compose up -d --force-recreate"
 }
 
 sanity_checks() {

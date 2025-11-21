@@ -32,6 +32,7 @@ class AppConfig:
     show_windows: bool = True
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    default_mode: str = "single"
 
     @property
     def device(self) -> str:
@@ -55,6 +56,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-ui", dest="show_windows", action="store_false", help="Disable OpenCV windows (headless)")
     parser.add_argument("--host", type=str, help="Host for the web UI server")
     parser.add_argument("--port", type=int, help="Port for the web UI server")
+    parser.add_argument(
+        "--default-mode",
+        type=str,
+        choices=["single", "dual"],
+        help="Default inference mode to present in the web UI",
+    )
     parser.set_defaults(use_cuda=None, show_windows=True)
     return parser.parse_args(argv)
 
@@ -70,6 +77,8 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available())
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
+    env_default_mode = os.getenv(f"{ENV_PREFIX}DEFAULT_MODE") or os.getenv("DEFAULT_MODE")
+    role_hint = os.getenv("ROLE")
 
     camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
     emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "trpakov/vit-face-expression"
@@ -89,6 +98,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     show_windows = args.show_windows
     server_host = args.host if args.host else env_host or "0.0.0.0"
     server_port = args.port if args.port is not None else int(env_port) if env_port else 8000
+    default_mode = args.default_mode or env_default_mode or ("dual" if role_hint in {"vision", "diffusion", "dual"} else "single")
 
     return AppConfig(
         camera_index=camera_index,
@@ -100,6 +110,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         show_windows=show_windows,
         server_host=server_host,
         server_port=server_port,
+        default_mode=default_mode,
     )
 
 
