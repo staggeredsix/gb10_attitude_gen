@@ -61,7 +61,9 @@ class ImageGenerator:
             pipe.enable_xformers_memory_efficient_attention()
         except Exception:  # noqa: BLE001
             LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
+        LOGGER.info("Pushing FLUX pipeline to %s with dtype=%s", self.device, dtype)
         pipe.to(device=self.device, dtype=dtype)
+        LOGGER.info("FLUX ControlNet pipeline is ready on %s", self.device)
 
         return _PipelineBundle(pipeline=pipe, dtype=dtype)
 

@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
 from .emotion_classifier import EmotionClassifier
-from .face_detection import FaceDetector
+from .face_segmentation import FaceSegmenter
 from .image_generator import ImageGenerator
 from .prompt_builder import STYLE_MAP, build_prompt
 
@@ -43,7 +43,11 @@ class InferencePipeline:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.detector = FaceDetector(min_confidence=config.detection_confidence)
+        self.segmenter = FaceSegmenter(
+            config.face_segmentation_model,
+            config.device,
+            min_face_ratio=config.segmentation_min_area,
+        )
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
@@ -56,32 +60,24 @@ class InferencePipeline:
             config.device,
         )
 
-    @staticmethod
-    def _extract_face(frame: cv2.typing.MatLike, x1: int, y1: int, x2: int, y2: int) -> Optional[np.ndarray]:
-        face_crop = frame[y1:y2, x1:x2]
-        if face_crop.size == 0:
-            return None
-        return face_crop
-
     def process(
         self, frame: cv2.typing.MatLike, style_key: Optional[str], mode: str, state: SessionState
     ) -> tuple[Optional[str], Optional[np.ndarray], bool, Optional[float]]:
         """Process a frame and update session state as needed."""
 
-        boxes = self.detector.detect(frame)
+        segmentation = self.segmenter.segment(frame)
         emotion: Optional[str] = None
         face: Optional[np.ndarray] = None
         gen_latency_ms: Optional[float] = None
 
         state.mode = mode if mode in {"single", "dual"} else state.mode
 
-        if boxes:
-            box = boxes[0]
-            face = self._extract_face(frame, box.x1, box.y1, box.x2, box.y2)
+        if segmentation:
+            face = segmentation.crop_face(frame)
             if face is not None:
                 emotion = self.classifier.classify(face)
         else:
-            LOGGER.debug("No face detected in incoming frame")
+            LOGGER.debug("No face segmented in incoming frame")
 
         now = time.time()
         should_generate = (
@@ -176,8 +172,7 @@ def _prepare_tls(config: AppConfig) -> tuple[Optional[str], Optional[str]]:
 
     cert_pair = _ensure_self_signed_cert(config.ssl_certfile, config.ssl_keyfile)
     if cert_pair is None:
-        LOGGER.warning("Starting without TLS because certificates are unavailable")
-        return None, None
+        raise RuntimeError("HTTPS requested but certificate/key generation failed")
 
     return cert_pair
 
@@ -195,14 +190,14 @@ def _build_html(default_mode: str) -> str:
         <title>AI Mood Mirror</title>
         <style>
             :root {
-                --bg: #f6f7fb;
-                --card: #ffffff;
-                --border: #d7dce7;
-                --text: #111827;
-                --muted: #4b5563;
-                --accent: #2563eb;
-                --danger: #b91c1c;
-                --shadow: 0 16px 40px rgba(17, 24, 39, 0.08);
+                --bg: #0f1410;
+                --card: #111a12;
+                --border: #1f2b20;
+                --text: #e6ebe3;
+                --muted: #9bb18b;
+                --accent: #76b900;
+                --danger: #ff5f52;
+                --shadow: 0 16px 40px rgba(6, 8, 6, 0.6);
                 --radius: 14px;
             }
 
@@ -614,14 +609,14 @@ def _build_html(default_mode: str) -> str:
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
                     if (payload.status === 'models_ready') {
-                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}. Confidence ≥ ${payload.detection_confidence}.`);
+                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}. Face segmentation: ${payload.face_segmentation_model}.`);
                         return;
                     }
 
                     if (payload.emotion) {
                         setStatus(`Emotion: ${payload.emotion}`);
                     } else {
-                        setStatus('No face detected');
+                        setStatus('No face segmented');
                     }
                     if (payload.mode) {
                         inferenceMode = payload.mode;
@@ -717,8 +712,8 @@ def create_app(config: AppConfig) -> FastAPI:
                 "status": "models_ready",
                 "emotion_model": config.emotion_model,
                 "diffusion_model": config.diffusion_model,
+                "face_segmentation_model": config.face_segmentation_model,
                 "device": config.device,
-                "detection_confidence": config.detection_confidence,
             }
         )
         try:

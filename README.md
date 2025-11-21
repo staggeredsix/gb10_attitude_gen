@@ -4,8 +4,8 @@ A simple demo that captures webcam video, detects faces, classifies emotions, an
 
 ## Features
 
-- Real-time face detection with MediaPipe
-- Emotion classification from face crops using a lightweight VLM (default: `Qwen/Qwen2-VL-2B-Instruct`)
+- GPU face segmentation (no MediaPipe) using a lightweight transformer
+- Emotion classification from face masks using a lightweight VLM (default: `Qwen/Qwen2-VL-2B-Instruct`)
 - Prompt construction mapped from dominant emotion
 - Diffusion image generation conditioned on your webcam frame (GPU-required)
 - OpenCV windows for webcam and generated portrait
@@ -49,7 +49,8 @@ Useful flags:
 - `--emotion-model`: Hugging Face model id for emotion detection.
 - `--diffusion-model`: Diffusion model id (default `black-forest-labs/FLUX.1-schnell`).
 - `--controlnet-model`: ControlNet id to condition on the webcam frame (default `InstantX/FLUX.1-dev-Controlnet-Union`).
-- `--detection-confidence`: Minimum confidence for face detection (default `0.5`).
+- `--face-segmentation-model`: Hugging Face model id for face segmentation.
+- `--segmentation-min-area`: Minimum area ratio for a valid face mask (default `0.01`).
 - `--generation-interval`: Seconds between portrait generations (default `3.0`).
 - `--use-cuda` / `--no-cuda`: Force enable/disable CUDA (GPU is mandatory; disabling will raise an error).
 - `--no-ui`: Run headless without OpenCV windows.

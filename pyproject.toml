@@ -14,12 +14,12 @@ dependencies = [
     "torch",
     "torchvision",
     "accelerate",
-    "mediapipe",
     "transformers",
     "diffusers",
     "numpy",
     "fastapi",
     "uvicorn[standard]",
+    "pillow",
 ]
 
 [project.scripts]
