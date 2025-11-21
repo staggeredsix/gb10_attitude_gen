@@ -29,7 +29,8 @@ class AppConfig:
     emotion_model: str = "Qwen/Qwen2-VL-2B-Instruct"
     diffusion_model: str = "black-forest-labs/FLUX.1-schnell"
     controlnet_model: str = "InstantX/FLUX.1-dev-Controlnet-Union"
-    detection_confidence: float = 0.5
+    face_segmentation_model: str = "briaai/RMBG-1.4"
+    segmentation_min_area: float = 0.01
     generation_interval: float = 3.0
     use_cuda: bool = True
     show_windows: bool = True
@@ -77,7 +78,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=str,
         help="Model id for the ControlNet used to condition generation on the webcam image",
     )
-    parser.add_argument("--detection-confidence", type=float, help="Minimum confidence for face detection")
+    parser.add_argument("--face-segmentation-model", type=str, help="Model id for face segmentation")
+    parser.add_argument(
+        "--segmentation-min-area",
+        type=float,
+        help="Minimum area ratio (0-1) for accepting a segmentation mask",
+    )
     parser.add_argument("--generation-interval", type=float, help="Seconds between portrait generations")
     parser.add_argument("--use-cuda", dest="use_cuda", action="store_true", help="Force use of CUDA if available")
     parser.add_argument("--no-cuda", dest="use_cuda", action="store_false", help="Disable CUDA usage")
@@ -115,7 +121,8 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_emotion_model = os.getenv(f"{ENV_PREFIX}EMOTION_MODEL")
     env_diffusion_model = os.getenv(f"{ENV_PREFIX}DIFFUSION_MODEL")
     env_controlnet_model = os.getenv(f"{ENV_PREFIX}CONTROLNET_MODEL")
-    env_detection_conf = os.getenv(f"{ENV_PREFIX}DETECTION_CONFIDENCE")
+    env_face_seg_model = os.getenv(f"{ENV_PREFIX}FACE_SEGMENTATION_MODEL")
+    env_seg_min_area = os.getenv(f"{ENV_PREFIX}SEGMENTATION_MIN_AREA")
     env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
     env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", True)
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
@@ -130,10 +137,19 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "Qwen/Qwen2-VL-2B-Instruct"
     diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "black-forest-labs/FLUX.1-schnell"
     controlnet_model = args.controlnet_model if args.controlnet_model else env_controlnet_model or "InstantX/FLUX.1-dev-Controlnet-Union"
-    detection_confidence = (
-        args.detection_confidence
-        if args.detection_confidence is not None
-        else float(env_detection_conf) if env_detection_conf else 0.5
+    face_seg_model = (
+        args.face_segmentation_model
+        if args.face_segmentation_model
+        else env_face_seg_model
+        if env_face_seg_model
+        else "briaai/RMBG-1.4"
+    )
+    segmentation_min_area = (
+        args.segmentation_min_area
+        if args.segmentation_min_area is not None
+        else float(env_seg_min_area)
+        if env_seg_min_area
+        else 0.01
     )
     generation_interval = (
         args.generation_interval
@@ -155,7 +171,8 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         emotion_model=emotion_model,
         diffusion_model=diffusion_model,
         controlnet_model=controlnet_model,
-        detection_confidence=detection_confidence,
+        face_segmentation_model=face_seg_model,
+        segmentation_min_area=segmentation_min_area,
         generation_interval=generation_interval,
         use_cuda=use_cuda,
         show_windows=show_windows,

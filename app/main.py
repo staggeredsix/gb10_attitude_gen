@@ -12,7 +12,7 @@ import numpy as np
 from .camera import Camera
 from .config import AppConfig, load_config, parse_args
 from .emotion_classifier import EmotionClassifier
-from .face_detection import BoundingBox, FaceDetector
+from .face_segmentation import FaceSegmenter, SegmentationResult
 from .image_generator import ImageGenerator
 from .prompt_builder import build_prompt
 from .ui import draw_face_overlays, overlay_no_face, show_window
@@ -20,9 +20,9 @@ from .ui import draw_face_overlays, overlay_no_face, show_window
 LOGGER = logging.getLogger(__name__)
 
 
-def _extract_face(frame: cv2.typing.MatLike, box: BoundingBox) -> Optional[np.ndarray]:
-    face_crop = frame[box.y1 : box.y2, box.x1 : box.x2]
-    if face_crop.size == 0:
+def _extract_face(frame: cv2.typing.MatLike, segmentation: SegmentationResult) -> Optional[np.ndarray]:
+    face_crop = segmentation.crop_face(frame)
+    if face_crop is None or face_crop.size == 0:
         return None
     return face_crop
 
@@ -34,7 +34,9 @@ def run(config: AppConfig) -> None:
 
     try:
         classifier = EmotionClassifier(config.emotion_model, config.device)
-        detector = FaceDetector(min_confidence=config.detection_confidence)
+        segmenter = FaceSegmenter(
+            config.face_segmentation_model, config.device, min_face_ratio=config.segmentation_min_area
+        )
         generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
         )
@@ -55,15 +57,15 @@ def run(config: AppConfig) -> None:
                     time.sleep(0.05)
                     continue
 
-                boxes = detector.detect(frame)
+                segmentation = segmenter.segment(frame)
                 emotion: Optional[str] = None
                 face: Optional[np.ndarray] = None
 
-                if boxes:
-                    face = _extract_face(frame, boxes[0])
+                if segmentation:
+                    face = _extract_face(frame, segmentation)
                     if face is not None:
                         emotion = classifier.classify(face)
-                    frame = draw_face_overlays(frame, boxes, emotion)
+                    frame = draw_face_overlays(frame, segmentation, emotion)
                 else:
                     frame = overlay_no_face(frame)
 
@@ -90,10 +92,6 @@ def run(config: AppConfig) -> None:
     except KeyboardInterrupt:
         LOGGER.info("Interrupted by user")
     finally:
-        try:
-            detector.close()
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("Detector close failed", exc_info=True)
         if config.show_windows:
             cv2.destroyAllWindows()
         LOGGER.info("Shutting down")
