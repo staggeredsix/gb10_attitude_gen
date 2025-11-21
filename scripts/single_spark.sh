@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_TAG="${IMAGE_TAG:-ai-mood-mirror:single}"
 PORT="${PORT:-8000}"
 ROLE="${ROLE:-single}"
+DEFAULT_MODE="${DEFAULT_MODE:-single}"
 
 usage() {
   cat <<USAGE
@@ -19,6 +20,7 @@ Environment variables:
   IMAGE_TAG   Docker image tag to build/use (default: ai-mood-mirror:single)
   PORT        Port to expose the web UI on (default: 8000)
   ROLE        Role label passed into the container (default: single)
+  DEFAULT_MODE Default inference mode surfaced in the web UI (default: single)
 
 Prereqs: docker, docker compose, NVIDIA Container Toolkit (for GPU acceleration).
 USAGE
@@ -43,7 +45,7 @@ echo "[info] Building ${IMAGE_TAG} from ${REPO_ROOT}"
 DOCKER_BUILDKIT=1 docker build -t "${IMAGE_TAG}" "${REPO_ROOT}"
 
 echo "[info] Starting ai-mood-mirror on port ${PORT}"
-IMAGE_TAG="${IMAGE_TAG}" PORT="${PORT}" ROLE="${ROLE}" docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d --force-recreate
+IMAGE_TAG="${IMAGE_TAG}" PORT="${PORT}" ROLE="${ROLE}" DEFAULT_MODE="${DEFAULT_MODE}" docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d --force-recreate
 
 echo "[ok] Single-node stack is live"
 echo "     URL: http://localhost:${PORT}" 

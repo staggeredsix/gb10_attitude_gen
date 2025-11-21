@@ -55,6 +55,7 @@ def run(config: AppConfig) -> None:
 
                 boxes = detector.detect(frame)
                 emotion: Optional[str] = None
+                face: Optional[np.ndarray] = None
 
                 if boxes:
                     face = _extract_face(frame, boxes[0])
@@ -72,7 +73,7 @@ def run(config: AppConfig) -> None:
 
                 if should_generate:
                     prompt = build_prompt(emotion)
-                    generated = generator.generate(prompt)
+                    generated = generator.generate(prompt, face)
                     if generated is not None:
                         generated_img = generated
                         last_emotion = emotion

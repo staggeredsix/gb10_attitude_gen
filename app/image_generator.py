@@ -8,7 +8,8 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from diffusers import AutoPipelineForText2Image
+from diffusers import AutoPipelineForImage2Image
+from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,20 +24,28 @@ class ImageGenerator:
         kwargs = {"torch_dtype": dtype}
         if dtype == torch.float16:
             kwargs["variant"] = "fp16"
-        self.pipe = AutoPipelineForText2Image.from_pretrained(
+        self.pipe = AutoPipelineForImage2Image.from_pretrained(
             model_name,
             **kwargs,
         ).to(self.device)
 
-    def generate(self, prompt: str) -> Optional[np.ndarray]:
+    def generate(self, prompt: str, init_image: np.ndarray | None) -> Optional[np.ndarray]:
         """Generate an image for the given prompt and return a BGR numpy array."""
+
+        if init_image is None:
+            LOGGER.debug("No init image provided for generation")
+            return None
+
         LOGGER.info("Generating image for prompt: %s", prompt)
         try:
             autocast_ctx = torch.autocast(device_type=self.device, dtype=torch.float16) if self.device == "cuda" else nullcontext()
             with autocast_ctx:
+                init_pil = Image.fromarray(cv2.cvtColor(init_image, cv2.COLOR_BGR2RGB))
                 image = self.pipe(
-                    prompt,
-                    num_inference_steps=2,
+                    prompt=prompt,
+                    image=init_pil,
+                    strength=0.6,
+                    num_inference_steps=4,
                     guidance_scale=0.0,
                 ).images[0]
             return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
