@@ -50,10 +50,15 @@ class AppConfig:
                 LOGGER.info("CUDA available: %s (compute capability %s.%s)", name, *capability)
                 return "cuda"
 
+            if torch.backends.mps.is_available():
+                LOGGER.info("Metal Performance Shaders backend detected; using MPS")
+                return "mps"
+
             LOGGER.warning(
-                "CUDA requested but PyTorch reports it is unavailable; falling back to CPU."
-                " Ensure a GPU-compatible PyTorch wheel is installed."
+                "GPU requested but PyTorch reports no CUDA or MPS devices; falling back to CPU."
+                " Ensure a GPU-compatible PyTorch wheel is installed and the runtime has GPU access."
             )
+
         return "cpu"
 
 

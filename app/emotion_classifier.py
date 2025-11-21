@@ -27,8 +27,12 @@ class EmotionClassifier:
     def __init__(self, model_name: str, device: str) -> None:
         self.device = device
         LOGGER.info("Loading emotion classifier: %s on %s", model_name, device)
+        dtype = torch.float16 if device.startswith("cuda") else None
         self.image_processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModelForImageClassification.from_pretrained(model_name).to(self.device)
+        self.model = AutoModelForImageClassification.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+        ).to(self.device)
 
     def classify(self, face_img: cv2.typing.MatLike) -> Optional[str]:
         """Return the predicted emotion for the provided face image."""

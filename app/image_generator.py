@@ -47,11 +47,13 @@ class ImageGenerator:
             torch_dtype=dtype,
         )
 
+
         try:
             pipe.enable_xformers_memory_efficient_attention()
         except Exception:  # noqa: BLE001
             LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
         pipe.to(device=self.device, dtype=dtype)
+
         return _PipelineBundle(pipeline=pipe, dtype=dtype)
 
     @staticmethod
