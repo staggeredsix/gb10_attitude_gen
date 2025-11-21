@@ -45,11 +45,14 @@ class InferencePipeline:
         self.config = config
         self.detector = FaceDetector(min_confidence=config.detection_confidence)
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
-        self.generator = ImageGenerator(config.diffusion_model, config.device)
+        self.generator = ImageGenerator(
+            config.diffusion_model, config.controlnet_model, config.device
+        )
         LOGGER.info(
-            "Models ready (emotion='%s', diffusion='%s', device=%s)",
+            "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s)",
             config.emotion_model,
             config.diffusion_model,
+            config.controlnet_model,
             config.device,
         )
 

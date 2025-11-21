@@ -1,13 +1,13 @@
 # AI Mood Mirror
 
-A simple demo that captures webcam video, detects faces, classifies emotions, and generates a matching portrait using SDXL Turbo.
+A simple demo that captures webcam video, detects faces, classifies emotions, and generates a matching portrait using a Stable Diffusion + ControlNet pipeline.
 
 ## Features
 
 - Real-time face detection with MediaPipe
 - Emotion classification from face crops (default: `trpakov/vit-face-expression`)
 - Prompt construction mapped from dominant emotion
-- SDXL Turbo image generation (GPU optional, CPU fallback)
+- Diffusion image generation conditioned on your webcam frame (GPU optional, CPU fallback)
 - OpenCV windows for webcam and generated portrait
 - Optional browser UI that streams webcam frames and returns generated portraits with style templates
 
@@ -15,10 +15,10 @@ A simple demo that captures webcam video, detects faces, classifies emotions, an
 
 1. Ensure Python 3.10+ is available.
 2. Install system dependencies for OpenCV (e.g., `libgl1`, `libglib2.0-0` on Debian/Ubuntu).
-3. Install a CUDA 13 build of PyTorch (required for GB10 GPUs):
+3. Install a CUDA 13 build of PyTorch (required for GB10 GPUs), including torchvision for preprocessing utilities:
 
 ```bash
-pip install --index-url https://download.pytorch.org/whl/cu130 torch
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 ```
 
 4. Install the package:
@@ -47,7 +47,8 @@ Useful flags:
 
 - `--camera-index`: Webcam index (default `0`, used only by the legacy OpenCV mode).
 - `--emotion-model`: Hugging Face model id for emotion detection.
-- `--diffusion-model`: Diffusion model id (default `stabilityai/sdxl-turbo`).
+- `--diffusion-model`: Diffusion model id (default `runwayml/stable-diffusion-v1-5`).
+- `--controlnet-model`: ControlNet id to condition on the webcam frame (default `lllyasviel/sd-controlnet-canny`).
 - `--detection-confidence`: Minimum confidence for face detection (default `0.5`).
 - `--generation-interval`: Seconds between portrait generations (default `3.0`).
 - `--use-cuda` / `--no-cuda`: Force enable/disable CUDA.
