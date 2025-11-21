@@ -57,7 +57,8 @@ class ImageGenerator:
     @staticmethod
     def _prepare_control_image(init_image: np.ndarray) -> Image.Image:
         blurred = cv2.GaussianBlur(init_image, (5, 5), 0)
-        edges = cv2.Canny(blurred, 100, 200)
+        grayscale = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(grayscale, 100, 200)
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
         return Image.fromarray(control)
 
