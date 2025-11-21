@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import base64
 import logging
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
+import tempfile
 from typing import Optional
 
 import cv2
@@ -111,6 +114,63 @@ def _encode_image_b64(image: np.ndarray) -> Optional[str]:
     if not success:
         return None
     return base64.b64encode(buffer).decode("ascii")
+
+
+def _ensure_self_signed_cert(cert_path: Optional[str], key_path: Optional[str]) -> Optional[tuple[str, str]]:
+    """Ensure a self-signed certificate/key pair exists and return their paths."""
+
+    target_dir = Path(tempfile.gettempdir()) / "ai_mood_mirror_certs"
+    cert_file = Path(cert_path) if cert_path else target_dir / "selfsigned.crt"
+    key_file = Path(key_path) if key_path else target_dir / "selfsigned.key"
+
+    if cert_file.exists() and key_file.exists():
+        return str(cert_file), str(key_file)
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-nodes",
+                "-days",
+                "365",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                str(key_file),
+                "-out",
+                str(cert_file),
+                "-subj",
+                "/CN=localhost",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return str(cert_file), str(key_file)
+    except FileNotFoundError:
+        LOGGER.warning("OpenSSL not available; cannot generate a self-signed certificate.")
+    except subprocess.CalledProcessError as exc:
+        LOGGER.warning("Failed to generate a self-signed certificate: %s", exc)
+
+    return None
+
+
+def _prepare_tls(config: AppConfig) -> tuple[Optional[str], Optional[str]]:
+    """Return cert/key paths if HTTPS is enabled, generating certs when needed."""
+
+    if not config.enable_https:
+        LOGGER.info("HTTPS disabled; starting web UI over HTTP")
+        return None, None
+
+    cert_pair = _ensure_self_signed_cert(config.ssl_certfile, config.ssl_keyfile)
+    if cert_pair is None:
+        LOGGER.warning("Starting without TLS because certificates are unavailable")
+        return None, None
+
+    return cert_pair
 
 
 def _build_html(default_mode: str) -> str:
@@ -679,8 +739,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
     config = load_config(args)
     app = create_app(config)
-    LOGGER.info("Starting web server on %s:%s", config.server_host, config.server_port)
-    uvicorn.run(app, host=config.server_host, port=config.server_port)
+    ssl_certfile, ssl_keyfile = _prepare_tls(config)
+    scheme = "https" if ssl_certfile and ssl_keyfile else "http"
+    LOGGER.info("Starting web server on %s://%s:%s", scheme, config.server_host, config.server_port)
+    uvicorn.run(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

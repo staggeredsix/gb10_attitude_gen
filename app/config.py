@@ -33,6 +33,9 @@ class AppConfig:
     server_host: str = "0.0.0.0"
     server_port: int = 8000
     default_mode: str = "single"
+    enable_https: bool = True
+    ssl_certfile: Optional[str] = None
+    ssl_keyfile: Optional[str] = None
 
     @property
     def device(self) -> str:
@@ -62,7 +65,21 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         choices=["single", "dual"],
         help="Default inference mode to present in the web UI",
     )
-    parser.set_defaults(use_cuda=None, show_windows=True)
+    parser.add_argument(
+        "--https",
+        dest="enable_https",
+        action="store_true",
+        help="Serve the web UI over HTTPS (self-signed certs generated if missing)",
+    )
+    parser.add_argument(
+        "--no-https",
+        dest="enable_https",
+        action="store_false",
+        help="Disable HTTPS and serve over HTTP",
+    )
+    parser.add_argument("--ssl-certfile", type=str, help="Path to an SSL certificate file")
+    parser.add_argument("--ssl-keyfile", type=str, help="Path to an SSL private key file")
+    parser.set_defaults(use_cuda=None, show_windows=True, enable_https=None)
     return parser.parse_args(argv)
 
 
@@ -78,6 +95,9 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
     env_default_mode = os.getenv(f"{ENV_PREFIX}DEFAULT_MODE") or os.getenv("DEFAULT_MODE")
+    env_enable_https = _bool_env(f"{ENV_PREFIX}ENABLE_HTTPS", True)
+    env_ssl_certfile = os.getenv(f"{ENV_PREFIX}SSL_CERTFILE")
+    env_ssl_keyfile = os.getenv(f"{ENV_PREFIX}SSL_KEYFILE")
     role_hint = os.getenv("ROLE")
 
     camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
@@ -99,6 +119,9 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     server_host = args.host if args.host else env_host or "0.0.0.0"
     server_port = args.port if args.port is not None else int(env_port) if env_port else 8000
     default_mode = args.default_mode or env_default_mode or ("dual" if role_hint in {"vision", "diffusion", "dual"} else "single")
+    enable_https = env_enable_https if args.enable_https is None else args.enable_https
+    ssl_certfile = args.ssl_certfile if args.ssl_certfile else env_ssl_certfile
+    ssl_keyfile = args.ssl_keyfile if args.ssl_keyfile else env_ssl_keyfile
 
     return AppConfig(
         camera_index=camera_index,
@@ -111,6 +134,9 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         server_host=server_host,
         server_port=server_port,
         default_mode=default_mode,
+        enable_https=enable_https,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
 
 
