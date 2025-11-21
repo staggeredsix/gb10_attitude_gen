@@ -478,6 +478,12 @@ def _build_html(default_mode: str) -> str:
             }
 
             async function startWebcam() {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    console.error('Browser does not support getUserMedia or page is not served over a secure context');
+                    setStatus('Webcam is not available in this browser or context', false);
+                    webcamToggle.checked = false;
+                    return;
+                }
                 try {
                     webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                     webcamEl.srcObject = webcamStream;
