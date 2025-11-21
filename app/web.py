@@ -46,6 +46,12 @@ class InferencePipeline:
         self.detector = FaceDetector(min_confidence=config.detection_confidence)
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(config.diffusion_model, config.device)
+        LOGGER.info(
+            "Models ready (emotion='%s', diffusion='%s', device=%s)",
+            config.emotion_model,
+            config.diffusion_model,
+            config.device,
+        )
 
     @staticmethod
     def _extract_face(frame: cv2.typing.MatLike, x1: int, y1: int, x2: int, y2: int) -> Optional[np.ndarray]:
@@ -604,6 +610,11 @@ def _build_html(default_mode: str) -> str:
 
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
+                    if (payload.status === 'models_ready') {
+                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}. Confidence ≥ ${payload.detection_confidence}.`);
+                        return;
+                    }
+
                     if (payload.emotion) {
                         setStatus(`Emotion: ${payload.emotion}`);
                     } else {
@@ -698,6 +709,15 @@ def create_app(config: AppConfig) -> FastAPI:
         await websocket.accept()
         state = SessionState(mode=config.default_mode)
         LOGGER.info("Client connected")
+        await websocket.send_json(
+            {
+                "status": "models_ready",
+                "emotion_model": config.emotion_model,
+                "diffusion_model": config.diffusion_model,
+                "device": config.device,
+                "detection_confidence": config.detection_confidence,
+            }
+        )
         try:
             while True:
                 data = await websocket.receive_json()

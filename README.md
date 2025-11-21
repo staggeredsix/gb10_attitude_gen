@@ -96,6 +96,7 @@ docker run --rm -it \
 - GPU acceleration is used when available and enabled; otherwise, models run on CPU.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
+- Models are pulled automatically from Hugging Face the first time the server starts; watch the logs for the "Models ready" line to confirm downloads finished.
 
 ## Cluster-accelerated demo concept
 
