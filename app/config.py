@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -10,6 +11,7 @@ import torch
 
 
 ENV_PREFIX = "AI_MOOD_MIRROR_"
+LOGGER = logging.getLogger(__name__)
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -40,8 +42,17 @@ class AppConfig:
     @property
     def device(self) -> str:
         """Return the torch device string based on availability and config."""
-        if self.use_cuda and torch.cuda.is_available():
-            return "cuda"
+        if self.use_cuda:
+            if torch.cuda.is_available():
+                name = torch.cuda.get_device_name(0)
+                capability = torch.cuda.get_device_capability(0)
+                LOGGER.info("CUDA available: %s (compute capability %s.%s)", name, *capability)
+                return "cuda"
+
+            LOGGER.warning(
+                "CUDA requested but PyTorch reports it is unavailable; falling back to CPU."
+                " Ensure a GPU-compatible PyTorch wheel is installed."
+            )
         return "cpu"
 
 
