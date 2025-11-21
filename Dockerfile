@@ -21,7 +21,7 @@ COPY app ./app
 
 RUN pip install --upgrade pip && \
     pip install . && \
-    python - <<'PY'
+    python3 - <<'PY'
 from huggingface_hub import snapshot_download
 
 models = [
