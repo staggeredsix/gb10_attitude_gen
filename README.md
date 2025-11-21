@@ -23,22 +23,22 @@ pip install .
 
 ## CLI usage
 
-Run the application:
-
-```bash
-ai-mood-mirror
-```
-
-Run the browser UI server (streams your webcam from the browser and pushes generated portraits back):
+Run the browser UI server (streams your webcam **from the browser**, so the backend never needs direct webcam access):
 
 ```bash
 ai-mood-mirror-web --port 8000
 # then open http://localhost:8000 in your browser
 ```
 
+If you want the legacy local-camera mode with OpenCV windows, run:
+
+```bash
+ai-mood-mirror
+```
+
 Useful flags:
 
-- `--camera-index`: Webcam index (default `0`).
+- `--camera-index`: Webcam index (default `0`, used only by the legacy OpenCV mode).
 - `--emotion-model`: Hugging Face model id for emotion detection.
 - `--diffusion-model`: Diffusion model id (default `stabilityai/sdxl-turbo`).
 - `--detection-confidence`: Minimum confidence for face detection (default `0.5`).
@@ -59,29 +59,22 @@ Build the image (requires NVIDIA GPU drivers):
 docker build -t ai-mood-mirror .
 ```
 
-Run with compose (shares X11 display and `/dev/video0`, exposes the web UI on `0.0.0.0:8000`):
+Run with compose (exposes the web UI on `0.0.0.0:8000` and lets the browser access your webcam):
 
 ```bash
 docker compose up
 ```
 
-Or run directly:
+Or run directly (backend does **not** need webcam access—your browser provides the video stream):
 
 ```bash
-xhost +local:root  # allow X11 from container
-
 docker run --rm -it \
   --gpus all \
-  -e DISPLAY=$DISPLAY \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  --device /dev/video0 \
   -p 8000:8000 \
-  ai-mood-mirror
+  ai-mood-mirror-web --host 0.0.0.0 --port 8000
 ```
-
-To run the web UI from the container, replace the command with `ai-mood-mirror-web --port 8000` and open `http://localhost:8000` in your browser.
 
 ## Notes
 

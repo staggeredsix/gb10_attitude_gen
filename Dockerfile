@@ -19,4 +19,4 @@ COPY app ./app
 RUN pip install --upgrade pip && \
     pip install .
 
-CMD ["ai-mood-mirror"]
+CMD ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]
