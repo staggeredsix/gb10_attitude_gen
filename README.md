@@ -15,7 +15,13 @@ A simple demo that captures webcam video, detects faces, classifies emotions, an
 
 1. Ensure Python 3.10+ is available.
 2. Install system dependencies for OpenCV (e.g., `libgl1`, `libglib2.0-0` on Debian/Ubuntu).
-3. Install the package:
+3. Install a CUDA 13 build of PyTorch (required for GB10 GPUs):
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu130 torch
+```
+
+4. Install the package:
 
 ```bash
 pip install .
@@ -53,7 +59,7 @@ Press `q` in the webcam window to exit.
 
 ## Docker
 
-Build the image (requires NVIDIA GPU drivers):
+Build the image (requires NVIDIA GPU drivers). The Dockerfile uses the CUDA 13 runtime and installs PyTorch from the `cu130` channel for GB10 compatibility:
 
 ```bash
 docker build -t ai-mood-mirror .
