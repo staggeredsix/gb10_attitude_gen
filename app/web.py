@@ -582,8 +582,8 @@ def _build_html(default_mode: str) -> str:
             }
 
             function openSocket() {
-                const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
-                socket = new WebSocket(`${wsScheme}://${location.host}/ws`);
+                const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+                socket = new WebSocket(wsUrl);
 
                 socket.onopen = () => {
                     ready = true;
