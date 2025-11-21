@@ -25,16 +25,21 @@ class ImageGenerator:
     """Generate images from text prompts using a diffusion pipeline conditioned on webcam input."""
 
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
-        requested_device = device
+        if device not in {"cuda", "mps"}:
+            LOGGER.error("Image generation requires a GPU; device '%s' is unsupported", device)
+            raise RuntimeError("Image generation requires a GPU")
+
         if device == "cuda" and not torch.cuda.is_available():
-            LOGGER.warning("CUDA requested but not available, falling back to CPU")
-            device = "cpu"
+            LOGGER.error("CUDA requested but not available; cannot initialize diffusion pipeline")
+            raise RuntimeError("CUDA device not available")
+
+        if device == "mps" and not torch.backends.mps.is_available():
+            LOGGER.error("MPS requested but not available; cannot initialize diffusion pipeline")
+            raise RuntimeError("MPS device not available")
 
         self.device = device
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        dtype = torch.float16
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
-        if requested_device == "cuda" and self.device != "cuda":
-            LOGGER.warning("Pipeline initialized on CPU because CUDA is unavailable")
 
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)

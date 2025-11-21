@@ -25,9 +25,21 @@ class EmotionClassifier:
     """Classify emotions from face crops."""
 
     def __init__(self, model_name: str, device: str) -> None:
+        if device not in {"cuda", "mps"}:
+            LOGGER.error("Emotion classification requires a GPU; device '%s' is unsupported", device)
+            raise RuntimeError("Emotion classifier requires GPU")
+
+        if device == "cuda" and not torch.cuda.is_available():
+            LOGGER.error("CUDA requested for emotion classifier but not available")
+            raise RuntimeError("CUDA device not available for emotion classifier")
+
+        if device == "mps" and not torch.backends.mps.is_available():
+            LOGGER.error("MPS requested for emotion classifier but not available")
+            raise RuntimeError("MPS device not available for emotion classifier")
+
         self.device = device
         LOGGER.info("Loading emotion classifier: %s on %s", model_name, device)
-        dtype = torch.float16 if device.startswith("cuda") else None
+        dtype = torch.float16
         self.image_processor = AutoImageProcessor.from_pretrained(model_name)
         self.model = AutoModelForImageClassification.from_pretrained(
             model_name,
