@@ -125,7 +125,7 @@ def _build_html(default_mode: str) -> str:
         <meta charset="utf-8" />
         <title>AI Mood Mirror</title>
         <style>
-            :root {{
+            :root {
                 --bg: #f6f7fb;
                 --card: #ffffff;
                 --border: #d7dce7;
@@ -135,109 +135,109 @@ def _build_html(default_mode: str) -> str:
                 --danger: #b91c1c;
                 --shadow: 0 16px 40px rgba(17, 24, 39, 0.08);
                 --radius: 14px;
-            }}
+            }
 
-            * {{ box-sizing: border-box; }}
+            * { box-sizing: border-box; }
 
-            body {{
+            body {
                 margin: 0;
                 min-height: 100vh;
                 font-family: 'Inter', system-ui, -apple-system, sans-serif;
                 background: var(--bg);
                 color: var(--text);
-            }}
+            }
 
-            header {{
+            header {
                 padding: 32px 28px 8px;
-            }}
+            }
 
-            h1 {{
+            h1 {
                 margin: 0 0 8px;
                 font-size: 32px;
                 letter-spacing: -0.01em;
-            }}
+            }
 
-            .subhead {{
+            .subhead {
                 margin: 0;
                 color: var(--muted);
                 max-width: 840px;
                 line-height: 1.5;
-            }}
+            }
 
-            main {{
+            main {
                 padding: 0 28px 40px;
-            }}
+            }
 
-            .grid {{
+            .grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
                 gap: 20px;
                 align-items: start;
-            }}
+            }
 
-            .card {{
+            .card {
                 background: var(--card);
                 border: 1px solid var(--border);
                 border-radius: var(--radius);
                 padding: 18px 18px 20px;
                 box-shadow: var(--shadow);
-            }}
+            }
 
-            .card h3 {{
+            .card h3 {
                 margin: 4px 0 10px;
                 font-size: 18px;
-            }}
+            }
 
-            .card p {{
+            .card p {
                 margin: 0 0 12px;
                 color: var(--muted);
                 line-height: 1.5;
-            }}
+            }
 
-            .controls {{
+            .controls {
                 display: flex;
                 gap: 12px;
                 flex-wrap: wrap;
                 align-items: center;
                 margin: 12px 0;
-            }}
+            }
 
-            .field {{
+            .field {
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
                 min-width: 180px;
-            }}
+            }
 
-            label {{
+            label {
                 font-weight: 600;
                 color: var(--text);
-            }}
+            }
 
-            select, button, input[type="file"] {{
+            select, button, input[type="file"] {
                 font: inherit;
-            }}
+            }
 
-            select {{
+            select {
                 padding: 10px 12px;
                 border-radius: 10px;
                 border: 1px solid var(--border);
                 background: #f9fafb;
-            }}
+            }
 
-            .upload-area {{
+            .upload-area {
                 border: 1px dashed var(--border);
                 border-radius: 12px;
                 padding: 14px;
                 background: #fafbff;
-            }}
+            }
 
-            .upload-area input {{
+            .upload-area input {
                 display: block;
                 width: 100%;
-            }}
+            }
 
-            button {{
+            button {
                 background: var(--accent);
                 color: #fff;
                 border: 1px solid var(--accent);
@@ -246,28 +246,28 @@ def _build_html(default_mode: str) -> str:
                 font-weight: 700;
                 cursor: pointer;
                 transition: filter 120ms ease;
-            }}
+            }
 
-            button:hover {{
+            button:hover {
                 filter: brightness(0.95);
-            }}
+            }
 
-            button:disabled {{
+            button:disabled {
                 background: #e5e7eb;
                 border-color: #e5e7eb;
                 color: var(--muted);
                 cursor: not-allowed;
-            }}
+            }
 
-            .switch {{
+            .switch {
                 display: inline-flex;
                 align-items: center;
                 gap: 8px;
                 cursor: pointer;
                 user-select: none;
-            }}
+            }
 
-            .switch input {{
+            .switch input {
                 width: 44px;
                 height: 24px;
                 appearance: none;
@@ -276,9 +276,9 @@ def _build_html(default_mode: str) -> str:
                 position: relative;
                 outline: none;
                 transition: background 140ms ease;
-            }}
+            }
 
-            .switch input::after {{
+            .switch input::after {
                 content: '';
                 position: absolute;
                 top: 3px;
@@ -289,17 +289,17 @@ def _build_html(default_mode: str) -> str:
                 background: #fff;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.15);
                 transition: transform 140ms ease;
-            }}
+            }
 
-            .switch input:checked {{
+            .switch input:checked {
                 background: var(--accent);
-            }}
+            }
 
-            .switch input:checked::after {{
+            .switch input:checked::after {
                 transform: translateX(20px);
-            }}
+            }
 
-            .preview {{
+            .preview {
                 width: 100%;
                 max-width: 560px;
                 border-radius: 12px;
@@ -307,9 +307,9 @@ def _build_html(default_mode: str) -> str:
                 background: #f9fafb;
                 min-height: 280px;
                 object-fit: contain;
-            }}
+            }
 
-            .status {{
+            .status {
                 margin-top: 10px;
                 display: inline-flex;
                 align-items: center;
@@ -320,42 +320,42 @@ def _build_html(default_mode: str) -> str:
                 border: 1px solid var(--border);
                 color: var(--text);
                 font-weight: 600;
-            }}
+            }
 
-            .status-dot {{
+            .status-dot {
                 width: 12px;
                 height: 12px;
                 border-radius: 50%;
                 background: var(--accent);
                 box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15);
-            }}
+            }
 
-            .metrics {{
+            .metrics {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
                 gap: 12px;
                 margin-top: 14px;
-            }}
+            }
 
-            .metric {{
+            .metric {
                 padding: 12px;
                 border: 1px solid var(--border);
                 border-radius: 12px;
                 background: #f9fafb;
-            }}
+            }
 
-            .metric .label {{
+            .metric .label {
                 font-size: 12px;
                 letter-spacing: 0.04em;
                 color: var(--muted);
                 text-transform: uppercase;
                 margin-bottom: 6px;
-            }}
+            }
 
-            .metric .value {{
+            .metric .value {
                 font-weight: 700;
                 font-size: 18px;
-            }}
+            }
         </style>
     </head>
     <body>
@@ -442,16 +442,16 @@ def _build_html(default_mode: str) -> str:
             let webcamStream = null;
             let frameTimer = null;
 
-            function setStatus(message, connected = ready) {{
+            function setStatus(message, connected = ready) {
                 statusText.textContent = message;
                 statusEl.querySelector('.status-dot').style.background = connected ? 'var(--accent)' : 'var(--danger)';
-            }}
+            }
 
-            function updateSendAvailability() {{
+            function updateSendAvailability() {
                 sendBtn.disabled = !(ready && pendingDataUrl && !webcamToggle.checked);
-            }}
+            }
 
-            function captureFrame(sourceEl) {{
+            function captureFrame(sourceEl) {
                 const maxWidth = 640;
                 const maxHeight = 480;
                 const width = sourceEl.videoWidth || sourceEl.naturalWidth;
@@ -465,49 +465,49 @@ def _build_html(default_mode: str) -> str:
                 return canvas.toDataURL('image/jpeg', 0.82);
             }
 
-            function sendFrame(dataUrl) {{
-                if (!ready) {{
+            function sendFrame(dataUrl) {
+                if (!ready) {
                     setStatus('Connecting to server, please wait...', false);
                     return;
-                }}
-                if (!dataUrl) {{
+                }
+                if (!dataUrl) {
                     setStatus('No frame available to send', false);
                     return;
-                }}
-                socket.send(JSON.stringify({{ frame: dataUrl, style: styleSelect.value, mode: inferenceMode }}));
+                }
+                socket.send(JSON.stringify({ frame: dataUrl, style: styleSelect.value, mode: inferenceMode }));
             }
 
-            async function startWebcam() {{
-                try {{
-                    webcamStream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
+            async function startWebcam() {
+                try {
+                    webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                     webcamEl.srcObject = webcamStream;
                     webcamEl.style.display = 'block';
                     preview.style.display = 'none';
                     await webcamEl.play();
                     setStatus('Streaming from webcam');
-                    frameTimer = setInterval(() => {{
+                    frameTimer = setInterval(() => {
                         const dataUrl = captureFrame(webcamEl);
-                        if (dataUrl) {{
+                        if (dataUrl) {
                             portrait.dataset.lastSource = 'webcam';
                             sendFrame(dataUrl);
-                        }}
-                    }}, 600);
-                }} catch (error) {{
+                        }
+                    }, 600);
+                } catch (error) {
                     console.error(error);
                     setStatus('Unable to access webcam', false);
                     webcamToggle.checked = false;
-                }}
+                }
             }
 
-            function stopWebcam() {{
-                if (frameTimer) {{
+            function stopWebcam() {
+                if (frameTimer) {
                     clearInterval(frameTimer);
                     frameTimer = null;
-                }}
-                if (webcamStream) {{
+                }
+                if (webcamStream) {
                     webcamStream.getTracks().forEach((track) => track.stop());
                     webcamStream = null;
-                }}
+                }
                 webcamEl.pause();
                 webcamEl.srcObject = null;
                 webcamEl.style.display = 'none';
@@ -515,89 +515,89 @@ def _build_html(default_mode: str) -> str:
                 setStatus('Webcam stopped');
             }
 
-            function openSocket() {{
-                socket = new WebSocket(`ws://${{location.host}}/ws`);
+            function openSocket() {
+                socket = new WebSocket(`ws://${location.host}/ws`);
 
-                socket.onopen = () => {{
+                socket.onopen = () => {
                     ready = true;
                     setStatus('Connected. Choose a source to begin.');
                     updateSendAvailability();
-                }};
+                };
 
-                socket.onclose = () => {{
+                socket.onclose = () => {
                     ready = false;
                     sendBtn.disabled = true;
                     setStatus('Disconnected. Reconnecting...', false);
                     setTimeout(openSocket, 1000);
-                }};
+                };
 
-                socket.onerror = (err) => {{
+                socket.onerror = (err) => {
                     console.error('WebSocket error', err);
-                }};
+                };
 
-                socket.onmessage = (event) => {{
+                socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
-                    if (payload.emotion) {{
-                        setStatus(`Emotion: ${{payload.emotion}}`);
-                    }} else {{
+                    if (payload.emotion) {
+                        setStatus(`Emotion: ${payload.emotion}`);
+                    } else {
                         setStatus('No face detected');
-                    }}
-                    if (payload.mode) {{
+                    }
+                    if (payload.mode) {
                         inferenceMode = payload.mode;
                         modeSelect.value = payload.mode;
                         modeLabel.textContent = payload.mode === 'dual' ? 'Dual node' : 'Single node';
-                    }}
-                    if (payload.latency_ms !== undefined) {{
-                        latencyLabel.textContent = `${{payload.latency_ms.toFixed(1)}} ms`;
-                    }}
-                    if (payload.generated_image) {{
-                        portrait.src = `data:image/jpeg;base64,${{payload.generated_image}}`;
-                    }}
-                }};
+                    }
+                    if (payload.latency_ms !== undefined) {
+                        latencyLabel.textContent = `${payload.latency_ms.toFixed(1)} ms`;
+                    }
+                    if (payload.generated_image) {
+                        portrait.src = `data:image/jpeg;base64,${payload.generated_image}`;
+                    }
+                };
             }
 
-            photoInput.addEventListener('change', (event) => {{
+            photoInput.addEventListener('change', (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
                 webcamToggle.checked = false;
                 stopWebcam();
                 const reader = new FileReader();
-                reader.onload = () => {{
+                reader.onload = () => {
                     const img = new Image();
-                    img.onload = () => {{
+                    img.onload = () => {
                         pendingDataUrl = captureFrame(img);
                         preview.src = pendingDataUrl;
                         setStatus('Image ready. Click "Send to AI".');
                         updateSendAvailability();
-                    }};
+                    };
                     img.src = reader.result;
-                }};
+                };
                 reader.readAsDataURL(file);
-            }});
+            });
 
-            sendBtn.addEventListener('click', () => {{
+            sendBtn.addEventListener('click', () => {
                 setStatus('Processing...');
                 sendFrame(pendingDataUrl);
-            }});
+            });
 
-            webcamToggle.addEventListener('change', (event) => {{
-                if (event.target.checked) {{
+            webcamToggle.addEventListener('change', (event) => {
+                if (event.target.checked) {
                     pendingDataUrl = null;
                     updateSendAvailability();
                     startWebcam();
                     uploadArea.style.opacity = 0.6;
-                }} else {{
+                } else {
                     stopWebcam();
                     uploadArea.style.opacity = 1;
                     setStatus('Webcam disabled. Upload an image or re-enable.');
                     updateSendAvailability();
-                }}
-            }});
+                }
+            });
 
-            modeSelect.addEventListener('change', (event) => {{
+            modeSelect.addEventListener('change', (event) => {
                 inferenceMode = event.target.value;
                 modeLabel.textContent = inferenceMode === 'dual' ? 'Dual node' : 'Single node';
-            }});
+            });
 
             window.addEventListener('beforeunload', stopWebcam);
             openSocket();
