@@ -152,7 +152,7 @@ def _build_html() -> str:
                     const stream = await navigator.mediaDevices.getUserMedia({{ video: true, audio: false }});
                     video.srcObject = stream;
                 }} catch (err) {{
-                    statusEl.textContent = `Camera error: ${err}`;
+                    statusEl.textContent = `Camera error: ${{err}}`;
                     throw err;
                 }}
             }}
@@ -179,12 +179,12 @@ def _build_html() -> str:
                 socket.onmessage = (event) => {{
                     const payload = JSON.parse(event.data);
                     if (payload.emotion) {{
-                        statusEl.textContent = `Emotion: ${payload.emotion}`;
+                        statusEl.textContent = `Emotion: ${{payload.emotion}}`;
                     }} else {{
                         statusEl.textContent = 'No face detected';
                     }}
                     if (payload.generated_image) {{
-                        portrait.src = `data:image/jpeg;base64,${payload.generated_image}`;
+                        portrait.src = `data:image/jpeg;base64,${{payload.generated_image}}`;
                     }}
                 }};
 
