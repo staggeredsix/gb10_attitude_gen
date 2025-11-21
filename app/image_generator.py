@@ -47,17 +47,12 @@ class ImageGenerator:
             torch_dtype=dtype,
         )
 
-        if self.device != "cpu":
-            controlnet.to(self.device, dtype=dtype)
-            pipe.to(self.device, dtype=dtype)
 
         try:
             pipe.enable_xformers_memory_efficient_attention()
         except Exception:  # noqa: BLE001
             LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
-
-        if self.device == "cpu":
-            pipe.to(device=self.device, dtype=dtype)
+        pipe.to(device=self.device, dtype=dtype)
 
         return _PipelineBundle(pipeline=pipe, dtype=dtype)
 
