@@ -9,7 +9,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from diffusers import ControlNetModel, StableDiffusionControlNetImg2ImgPipeline
+from diffusers import FluxControlNetModel, FluxControlNetPipeline
 from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class _PipelineBundle:
-    pipeline: StableDiffusionControlNetImg2ImgPipeline
+    pipeline: FluxControlNetPipeline
     dtype: torch.dtype
 
 
@@ -25,10 +25,6 @@ class ImageGenerator:
     """Generate images from text prompts using a diffusion pipeline conditioned on webcam input."""
 
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
-        if device not in {"cuda", "mps"}:
-            LOGGER.error("Image generation requires a GPU; device '%s' is unsupported", device)
-            raise RuntimeError("Image generation requires a GPU")
-
         if device == "cuda" and not torch.cuda.is_available():
             LOGGER.error("CUDA requested but not available; cannot initialize diffusion pipeline")
             raise RuntimeError("CUDA device not available")
@@ -37,16 +33,20 @@ class ImageGenerator:
             LOGGER.error("MPS requested but not available; cannot initialize diffusion pipeline")
             raise RuntimeError("MPS device not available")
 
+        if device not in {"cuda", "mps"}:
+            LOGGER.error("Diffusion requires a GPU (CUDA or MPS); got %s", device)
+            raise RuntimeError("GPU execution is required for diffusion")
+
         self.device = device
-        dtype = torch.float16
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float16
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)
-        controlnet = ControlNetModel.from_pretrained(controlnet_name, torch_dtype=dtype)
+        controlnet = FluxControlNetModel.from_pretrained(controlnet_name, torch_dtype=dtype)
 
         LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, self.device)
-        pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+        pipe = FluxControlNetPipeline.from_pretrained(
             model_name,
             controlnet=controlnet,
             torch_dtype=dtype,
@@ -83,16 +83,14 @@ class ImageGenerator:
                 else nullcontext()
             )
             with torch.inference_mode(), autocast_ctx:
-                init_pil = Image.fromarray(cv2.cvtColor(init_image, cv2.COLOR_BGR2RGB))
                 control_pil = self._prepare_control_image(init_image)
+                steps = 6
                 result = self.bundle.pipeline(
                     prompt=prompt,
-                    image=init_pil,
                     control_image=control_pil,
-                    strength=0.5,
-                    num_inference_steps=10,
-                    guidance_scale=7.5,
-                    controlnet_conditioning_scale=1.0,
+                    num_inference_steps=steps,
+                    guidance_scale=3.5,
+                    controlnet_conditioning_scale=0.9,
                     output_type="np",
                 )
                 image = result.images[0]

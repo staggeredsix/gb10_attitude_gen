@@ -1,13 +1,13 @@
 # AI Mood Mirror
 
-A simple demo that captures webcam video, detects faces, classifies emotions, and generates a matching portrait using a Stable Diffusion + ControlNet pipeline.
+A simple demo that captures webcam video, detects faces, classifies emotions, and generates a matching portrait using a FLUX + ControlNet pipeline.
 
 ## Features
 
 - Real-time face detection with MediaPipe
-- Emotion classification from face crops (default: `trpakov/vit-face-expression`)
+- Emotion classification from face crops using a lightweight VLM (default: `Qwen/Qwen2-VL-2B-Instruct`)
 - Prompt construction mapped from dominant emotion
-- Diffusion image generation conditioned on your webcam frame (GPU optional, CPU fallback)
+- Diffusion image generation conditioned on your webcam frame (GPU-required)
 - OpenCV windows for webcam and generated portrait
 - Optional browser UI that streams webcam frames and returns generated portraits with style templates
 
@@ -47,11 +47,11 @@ Useful flags:
 
 - `--camera-index`: Webcam index (default `0`, used only by the legacy OpenCV mode).
 - `--emotion-model`: Hugging Face model id for emotion detection.
-- `--diffusion-model`: Diffusion model id (default `runwayml/stable-diffusion-v1-5`).
-- `--controlnet-model`: ControlNet id to condition on the webcam frame (default `lllyasviel/sd-controlnet-canny`).
+- `--diffusion-model`: Diffusion model id (default `black-forest-labs/FLUX.1-schnell`).
+- `--controlnet-model`: ControlNet id to condition on the webcam frame (default `InstantX/FLUX.1-dev-Controlnet-Union`).
 - `--detection-confidence`: Minimum confidence for face detection (default `0.5`).
 - `--generation-interval`: Seconds between portrait generations (default `3.0`).
-- `--use-cuda` / `--no-cuda`: Force enable/disable CUDA.
+- `--use-cuda` / `--no-cuda`: Force enable/disable CUDA (GPU is mandatory; disabling will raise an error).
 - `--no-ui`: Run headless without OpenCV windows.
 - `--host` / `--port`: Host/port for the web UI server (defaults `0.0.0.0:8000`).
 - `--https` / `--no-https`: Enable or disable HTTPS for the web UI (HTTPS is on by default and will generate a self-signed cert
@@ -94,7 +94,7 @@ docker run --rm -it \
 
 ## Notes
 
-- GPU acceleration is used when available and enabled; otherwise, models run on CPU.
+- GPU acceleration is required for both the VLM-based emotion rater and the FLUX ControlNet pipeline; startup will fail if no CUDA or MPS device is detected.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
 - Models are pulled automatically from Hugging Face the first time the server starts; watch the logs for the "Models ready" line to confirm downloads finished.

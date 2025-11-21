@@ -26,12 +26,12 @@ class AppConfig:
     """Runtime configuration for the application."""
 
     camera_index: int = 0
-    emotion_model: str = "trpakov/vit-face-expression"
-    diffusion_model: str = "runwayml/stable-diffusion-v1-5"
-    controlnet_model: str = "lllyasviel/sd-controlnet-canny"
+    emotion_model: str = "Qwen/Qwen2-VL-2B-Instruct"
+    diffusion_model: str = "black-forest-labs/FLUX.1-schnell"
+    controlnet_model: str = "InstantX/FLUX.1-dev-Controlnet-Union"
     detection_confidence: float = 0.5
     generation_interval: float = 3.0
-    use_cuda: bool = torch.cuda.is_available() or torch.backends.mps.is_available()
+    use_cuda: bool = True
     show_windows: bool = True
     server_host: str = "0.0.0.0"
     server_port: int = 8000
@@ -42,9 +42,13 @@ class AppConfig:
 
     @property
     def device(self) -> str:
-        """Return the torch device string based on availability and config."""
+        """Return the torch device string based on availability and config.
+
+        The application requires a GPU-backed device. If initialization fails,
+        the caller must handle the RuntimeError and exit gracefully.
+        """
         if not self.use_cuda:
-            LOGGER.error("GPU execution is required; CPU-only mode is not supported")
+            LOGGER.error("GPU execution is required; CUDA cannot be disabled")
             raise RuntimeError("GPU execution is required")
 
         if torch.cuda.is_available():
@@ -57,11 +61,8 @@ class AppConfig:
             LOGGER.info("Metal Performance Shaders backend detected; using MPS")
             return "mps"
 
-        LOGGER.error(
-            "GPU execution requested but no CUDA or MPS devices are available; aborting startup."
-            " Ensure a GPU-compatible PyTorch wheel is installed and the runtime has GPU access."
-        )
-        raise RuntimeError("GPU device not available")
+        LOGGER.error("No CUDA or MPS devices detected; GPU execution is required")
+        raise RuntimeError("GPU execution is required")
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -116,9 +117,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_controlnet_model = os.getenv(f"{ENV_PREFIX}CONTROLNET_MODEL")
     env_detection_conf = os.getenv(f"{ENV_PREFIX}DETECTION_CONFIDENCE")
     env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
-    env_use_cuda = _bool_env(
-        f"{ENV_PREFIX}USE_CUDA", torch.cuda.is_available() or torch.backends.mps.is_available()
-    )
+    env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", True)
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
     env_default_mode = os.getenv(f"{ENV_PREFIX}DEFAULT_MODE") or os.getenv("DEFAULT_MODE")
@@ -128,9 +127,9 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     role_hint = os.getenv("ROLE")
 
     camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
-    emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "trpakov/vit-face-expression"
-    diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "runwayml/stable-diffusion-v1-5"
-    controlnet_model = args.controlnet_model if args.controlnet_model else env_controlnet_model or "lllyasviel/sd-controlnet-canny"
+    emotion_model = args.emotion_model if args.emotion_model else env_emotion_model or "Qwen/Qwen2-VL-2B-Instruct"
+    diffusion_model = args.diffusion_model if args.diffusion_model else env_diffusion_model or "black-forest-labs/FLUX.1-schnell"
+    controlnet_model = args.controlnet_model if args.controlnet_model else env_controlnet_model or "InstantX/FLUX.1-dev-Controlnet-Union"
     detection_confidence = (
         args.detection_confidence
         if args.detection_confidence is not None
