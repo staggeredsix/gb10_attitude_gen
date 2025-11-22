@@ -92,12 +92,18 @@ export HUGGINGFACE_TOKEN=<hf_token>
 docker compose up --build
 ```
 
-The compose file explicitly reserves NVIDIA GPUs (`deploy.resources.reservations.devices`) and sets `NVIDIA_VISIBLE_DEVICES=all`.
+The compose file explicitly requests NVIDIA GPUs (`gpus: all`) and sets `NVIDIA_VISIBLE_DEVICES=all`.
 If startup fails with "GPU execution is required", confirm GPU visibility from inside the container:
 
 ```bash
 docker compose exec -T ai-mood-mirror python3 -c "import torch; print({'cuda_available': torch.cuda.is_available(), 'cuda_device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None})"
 ```
+
+Troubleshooting GPU visibility:
+
+- The container **must** start with GPU access (`docker run --gpus all ...` or the compose file above). If you are running in an environment without NVIDIA hardware (e.g., CI runners or cloud sandboxes without GPU passthrough), startup will fail with the `GPU execution is required` error seen in the logs.
+- Verify the NVIDIA container runtime is installed locally and that `nvidia-smi` works on the host before launching compose.
+- If GPUs remain hidden, try `docker compose up --build --verbose` to confirm the GPU request is reaching the engine, or run the image directly with `docker run --gpus all ...` to bypass compose translation.
 
 Or run directly (backend does **not** need webcam access—your browser provides the video stream):
 
