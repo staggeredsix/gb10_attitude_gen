@@ -55,64 +55,71 @@ class FaceSegmenter:
 
         self.device = device
         self.min_face_ratio = min_face_ratio
+        self.processor = None
+        self.model = None
+        self._cascade: Optional[cv2.CascadeClassifier] = None
+
         if device == "cpu":
             dtype = torch.float32
         else:
             dtype = torch.float16 if device == "mps" or not torch.cuda.is_bf16_supported() else torch.bfloat16
 
         LOGGER.info("Loading face segmentation model: %s on %s", model_name, device)
-        self.processor = None
         try:
             self.processor = AutoImageProcessor.from_pretrained(
                 model_name, trust_remote_code=True
             )
-        except ValueError as err:
-            LOGGER.warning(
-                "Falling back to AutoProcessor for %s because AutoImageProcessor was not recognized: %s",
+            self.model = AutoModelForImageSegmentation.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                trust_remote_code=True,
+            ).to(device)
+            LOGGER.info("Face segmentation model ready: %s", model_name)
+        except Exception as err:  # noqa: BLE001
+            LOGGER.error(
+                "Failed to load %s via Transformers; falling back to OpenCV face detection: %s",
                 model_name,
                 err,
             )
             try:
-                self.processor = AutoProcessor.from_pretrained(
-                    model_name, trust_remote_code=True
-                )
-            except ValueError as inner_err:
-                LOGGER.warning(
-                    "Falling back to AutoFeatureExtractor for %s because AutoProcessor was not recognized: %s",
-                    model_name,
-                    inner_err,
-                )
-                self.processor = AutoFeatureExtractor.from_pretrained(
-                    model_name, trust_remote_code=True
-                )
-
-        if self.processor is None:
-            raise RuntimeError(f"Failed to load processor for {model_name}")
-        self.model = AutoModelForImageSegmentation.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-        ).to(device)
-        LOGGER.info("Face segmentation model ready: %s", model_name)
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                self._cascade = cv2.CascadeClassifier(cascade_path)
+                if self._cascade.empty():
+                    raise RuntimeError("Failed to load Haar cascade for fallback segmentation")
+                LOGGER.info("Loaded OpenCV Haar cascade fallback for face detection")
+            except Exception as cascade_err:  # noqa: BLE001
+                LOGGER.error("Fallback face detection unavailable: %s", cascade_err)
 
     def segment(self, frame_bgr: cv2.typing.MatLike) -> Optional[SegmentationResult]:
         """Return a segmentation mask for the most prominent face."""
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+        if self.model and self.processor:
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            image = Image.fromarray(rgb)
+            inputs = self.processor(images=image, return_tensors="pt").to(self.device)
 
-        with torch.no_grad():
-            outputs = self.model(**inputs)
+            with torch.no_grad():
+                outputs = self.model(**inputs)
 
-        logits = outputs.logits
-        upsampled = torch.nn.functional.interpolate(
-            logits,
-            size=image.size[::-1],
-            mode="bilinear",
-            align_corners=False,
-        )
-        mask = upsampled.argmax(dim=1)[0].detach().cpu().numpy()
-        face_mask = mask != 0
+            logits = outputs.logits
+            upsampled = torch.nn.functional.interpolate(
+                logits,
+                size=image.size[::-1],
+                mode="bilinear",
+                align_corners=False,
+            )
+            mask = upsampled.argmax(dim=1)[0].detach().cpu().numpy()
+            face_mask = mask != 0
+        elif self._cascade is not None:
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            detections = self._cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+            if len(detections) == 0:
+                return None
+            x, y, w, h = max(detections, key=lambda box: box[2] * box[3])
+            mask = np.zeros(frame_bgr.shape[:2], dtype=bool)
+            mask[y : y + h, x : x + w] = True
+            face_mask = mask
+        else:
+            return None
 
         if not np.any(face_mask):
             LOGGER.debug("Segmentation did not find a face region")

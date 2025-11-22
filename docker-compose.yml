@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   ai-mood-mirror:
     image: "${IMAGE_TAG:-ai-mood-mirror:latest}"
