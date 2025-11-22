@@ -18,9 +18,5 @@ services:
       - ./models:/models
     ports:
       - "${PORT:-8000}:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
+    gpus: all
     ipc: host
