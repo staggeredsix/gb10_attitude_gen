@@ -84,7 +84,7 @@ Build the image and start with compose (exposes the web UI on `0.0.0.0:8000` and
 docker compose up --build
 ```
 
-The compose file explicitly requests NVIDIA GPUs (`deploy.reservations.devices` + `NVIDIA_VISIBLE_DEVICES=all`).
+The compose file explicitly requests NVIDIA GPUs (`deploy.reservations.devices`, `gpus: all`, and `NVIDIA_VISIBLE_DEVICES=all`).
 If startup fails with "GPU execution is required", confirm GPU visibility from inside the container:
 
 ```bash
@@ -95,6 +95,7 @@ Troubleshooting GPU visibility:
 
 - The container **must** start with GPU access (`docker run --gpus all ...` or the compose file above). If you are running in an environment without NVIDIA hardware (e.g., CI runners or cloud sandboxes without GPU passthrough), startup will fail with the `GPU execution is required` error seen in the logs.
 - Verify the NVIDIA container runtime is installed locally and that `nvidia-smi` works on the host before launching compose.
+- On some Docker Compose versions you may need to enable the NVIDIA runtime explicitly: add `DOCKER_DEFAULT_PLATFORM=linux/amd64` when building on non-native hosts and ensure `/etc/docker/daemon.json` contains `"default-runtime": "nvidia"` with the NVIDIA toolkit installed.
 - If GPUs remain hidden, try `docker compose up --build --verbose` to confirm the GPU request is reaching the engine, or run the image directly with `docker run --gpus all ...` to bypass compose translation.
 - For an interactive shell with a `/bin/bash` entrypoint (so you can run `nvidia-smi`, Python CUDA checks, etc.), use `./scripts/gpu_shell.sh`.
 

@@ -41,13 +41,16 @@ class EmotionClassifier:
     """Use a VLM to map face crops to a discrete emotion label."""
 
     def __init__(self, model_name: str, device: str) -> None:
-        if device not in {"cuda", "mps"}:
-            LOGGER.error("Emotion VLM requires a GPU device; got %s", device)
-            raise RuntimeError("GPU execution is required for emotion analysis")
+        if device not in {"cuda", "mps", "cpu"}:
+            LOGGER.error("Emotion VLM requires a valid device; got %s", device)
+            raise RuntimeError("Unsupported device for emotion analysis")
 
         if device == "cuda" and not torch.cuda.is_bf16_supported():
             LOGGER.info("BF16 not supported on this CUDA device; using float16 for emotion VLM")
             dtype = torch.float16
+        elif device == "cpu":
+            LOGGER.warning("Running emotion classifier on CPU; performance may be degraded")
+            dtype = torch.float32
         else:
             dtype = torch.float16 if device == "mps" else torch.bfloat16
         self.device = device

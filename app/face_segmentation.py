@@ -36,19 +36,24 @@ class FaceSegmenter:
     """Segment faces using a GPU-backed semantic segmentation model."""
 
     def __init__(self, model_name: str, device: str, min_face_ratio: float = 0.01) -> None:
-        if device not in {"cuda", "mps"}:
-            LOGGER.error("Face segmentation requires a GPU device; got %s", device)
-            raise RuntimeError("GPU execution is required for segmentation")
+        if device not in {"cuda", "mps", "cpu"}:
+            LOGGER.error("Face segmentation requires a valid device; got %s", device)
+            raise RuntimeError("Unsupported device for segmentation")
 
         if device == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("CUDA device not available for segmentation")
+            LOGGER.warning("CUDA requested but not available; falling back to CPU for segmentation")
+            device = "cpu"
 
         if device == "mps" and not torch.backends.mps.is_available():
-            raise RuntimeError("MPS device not available for segmentation")
+            LOGGER.warning("MPS requested but not available; falling back to CPU for segmentation")
+            device = "cpu"
 
         self.device = device
         self.min_face_ratio = min_face_ratio
-        dtype = torch.float16 if device == "mps" or not torch.cuda.is_bf16_supported() else torch.bfloat16
+        if device == "cpu":
+            dtype = torch.float32
+        else:
+            dtype = torch.float16 if device == "mps" or not torch.cuda.is_bf16_supported() else torch.bfloat16
 
         LOGGER.info("Loading face segmentation model: %s on %s", model_name, device)
         self.processor = AutoImageProcessor.from_pretrained(
