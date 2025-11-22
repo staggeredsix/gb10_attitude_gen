@@ -17,11 +17,5 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     runtime: nvidia
+    gpus: all
     ipc: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
