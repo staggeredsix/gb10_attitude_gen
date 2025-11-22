@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForImageSegmentation
+from transformers import AutoImageProcessor, AutoModelForImageSegmentation, AutoProcessor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,9 +56,19 @@ class FaceSegmenter:
             dtype = torch.float16 if device == "mps" or not torch.cuda.is_bf16_supported() else torch.bfloat16
 
         LOGGER.info("Loading face segmentation model: %s on %s", model_name, device)
-        self.processor = AutoImageProcessor.from_pretrained(
-            model_name, trust_remote_code=True
-        )
+        try:
+            self.processor = AutoImageProcessor.from_pretrained(
+                model_name, trust_remote_code=True
+            )
+        except ValueError as err:
+            LOGGER.warning(
+                "Falling back to AutoProcessor for %s because AutoImageProcessor was not recognized: %s",
+                model_name,
+                err,
+            )
+            self.processor = AutoProcessor.from_pretrained(
+                model_name, trust_remote_code=True
+            )
         self.model = AutoModelForImageSegmentation.from_pretrained(
             model_name,
             torch_dtype=dtype,
