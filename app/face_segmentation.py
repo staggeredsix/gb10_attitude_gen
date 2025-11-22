@@ -9,7 +9,12 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForImageSegmentation, AutoProcessor
+from transformers import (
+    AutoFeatureExtractor,
+    AutoImageProcessor,
+    AutoModelForImageSegmentation,
+    AutoProcessor,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +61,7 @@ class FaceSegmenter:
             dtype = torch.float16 if device == "mps" or not torch.cuda.is_bf16_supported() else torch.bfloat16
 
         LOGGER.info("Loading face segmentation model: %s on %s", model_name, device)
+        self.processor = None
         try:
             self.processor = AutoImageProcessor.from_pretrained(
                 model_name, trust_remote_code=True
@@ -66,9 +72,22 @@ class FaceSegmenter:
                 model_name,
                 err,
             )
-            self.processor = AutoProcessor.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+            try:
+                self.processor = AutoProcessor.from_pretrained(
+                    model_name, trust_remote_code=True
+                )
+            except ValueError as inner_err:
+                LOGGER.warning(
+                    "Falling back to AutoFeatureExtractor for %s because AutoProcessor was not recognized: %s",
+                    model_name,
+                    inner_err,
+                )
+                self.processor = AutoFeatureExtractor.from_pretrained(
+                    model_name, trust_remote_code=True
+                )
+
+        if self.processor is None:
+            raise RuntimeError(f"Failed to load processor for {model_name}")
         self.model = AutoModelForImageSegmentation.from_pretrained(
             model_name,
             torch_dtype=dtype,
