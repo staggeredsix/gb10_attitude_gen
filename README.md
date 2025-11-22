@@ -71,28 +71,20 @@ Build the image (requires NVIDIA GPU drivers). The Dockerfile uses the CUDA 13 r
 docker build -t ai-mood-mirror .
 ```
 
-If your Hugging Face models require authentication, pass a token at build time so snapshots can download during the image build (the token is not persisted in the final image):
+Models are downloaded once to a shared `./models` directory and mounted into the container at runtime. Download them locally (optionally with a Hugging Face token) before building:
 
 ```bash
-docker build -t ai-mood-mirror . \
-  --build-arg HUGGINGFACE_TOKEN=<hf_token>
-# or --build-arg HF_TOKEN / --build-arg HUGGINGFACE_HUB_TOKEN
+./scripts/download_models.sh
+# optionally: HUGGINGFACE_TOKEN=<token> ./scripts/download_models.sh
 ```
 
-Run with compose (exposes the web UI on `0.0.0.0:8000` and lets the browser access your webcam):
+Build the image and start with compose (exposes the web UI on `0.0.0.0:8000` and lets the browser access your webcam):
 
 ```bash
-docker compose up
-```
-
-To forward the same token through the compose build, export it locally before running compose:
-
-```bash
-export HUGGINGFACE_TOKEN=<hf_token>
 docker compose up --build
 ```
 
-The compose file explicitly requests NVIDIA GPUs (`gpus: all`) and sets `NVIDIA_VISIBLE_DEVICES=all`.
+The compose file explicitly requests NVIDIA GPUs (`deploy.reservations.devices` + `NVIDIA_VISIBLE_DEVICES=all`).
 If startup fails with "GPU execution is required", confirm GPU visibility from inside the container:
 
 ```bash
@@ -119,14 +111,14 @@ docker run --rm -it \
 ### Deployment scripts
 
 - **Single node:** `./scripts/single_spark.sh` builds the image locally and launches the web UI on the current machine (defaults to port `8000`).
-- **Dual node:** `VISION_HOST=<dgx1> DIFFUSION_HOST=<dgx2> ./scripts/dual_spark.sh` configures the dual 100G ports, syncs the repo to each host, builds the container, and runs a quick connectivity/GPU sanity check.
+- **Dual node:** `VISION_HOST=<dgx1> DIFFUSION_HOST=<dgx2> ./scripts/dual_spark.sh` configures the dual 100G ports, syncs the repo (including `./models`) to each host, builds the container, and runs a quick connectivity/GPU sanity check.
 
 ## Notes
 
 - GPU acceleration is required for both the VLM-based emotion rater and the FLUX ControlNet pipeline; startup will fail if no CUDA or MPS device is detected.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
-- Models are pulled automatically from Hugging Face the first time the server starts; watch the logs for the "Models ready" line to confirm downloads finished.
+- Models must exist under `./models` (populated via `./scripts/download_models.sh`) and are mounted into the container at `/models`; the entrypoint will exit with a clear error if they are missing.
 
 ## Cluster-accelerated demo concept
 

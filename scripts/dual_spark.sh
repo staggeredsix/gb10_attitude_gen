@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Two-node orchestration helper for the cluster-accelerated Mind Mirror demo.
+# - Downloads required models to ./models
 # - Sets MTU on the dual 100G ports on both nodes
-# - Syncs the repo to both nodes
+# - Syncs the repo (including models) to both nodes
 # - Builds and launches the containers on each node
 # - Runs lightweight connectivity and GPU sanity checks
 
@@ -104,6 +105,9 @@ sanity_checks() {
   done
 }
 
+echo "[step] Downloading required models locally"
+"${REPO_ROOT}/scripts/download_models.sh"
+
 echo "[step] Configuring dual 100G fabric"
 configure_nics "${VISION_HOST}"
 configure_nics "${DIFFUSION_HOST}"
@@ -120,6 +124,6 @@ echo "[step] Running sanity checks"
 sanity_checks
 
 echo "[ok] Dual-node stack deployed"
-echo "     Vision host:    ${VISION_HOST}" 
-echo "     Diffusion host: ${DIFFUSION_HOST}" 
+echo "     Vision host:    ${VISION_HOST}"
+echo "     Diffusion host: ${DIFFUSION_HOST}"
 echo "     Web UI:         http://${DIFFUSION_HOST}:${PORT}"

@@ -1,21 +1,26 @@
 version: "3.9"
+
 services:
   ai-mood-mirror:
     image: "${IMAGE_TAG:-ai-mood-mirror:latest}"
     build:
       context: .
-      args:
-        HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
-        HF_TOKEN: ${HF_TOKEN:-}
-        HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN:-}
+      dockerfile: Dockerfile
     command: ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=all
-      - ROLE=${ROLE:-single}
-      - AI_MOOD_MIRROR_DEFAULT_MODE=${DEFAULT_MODE:-single}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
+      ROLE: ${ROLE:-single}
+      AI_MOOD_MIRROR_DEFAULT_MODE: ${DEFAULT_MODE:-single}
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
+    volumes:
+      - ./models:/models
     ports:
       - "${PORT:-8000}:8000"
-    runtime: nvidia
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
     ipc: host
