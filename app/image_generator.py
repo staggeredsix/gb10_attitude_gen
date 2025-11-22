@@ -26,21 +26,24 @@ class ImageGenerator:
 
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
         if device == "cuda" and not torch.cuda.is_available():
-            LOGGER.error("CUDA requested but not available; cannot initialize diffusion pipeline")
-            raise RuntimeError("CUDA device not available")
+            LOGGER.warning("CUDA requested but not available; falling back to CPU for diffusion")
+            device = "cpu"
 
         if device == "mps" and not torch.backends.mps.is_available():
-            LOGGER.error("MPS requested but not available; cannot initialize diffusion pipeline")
-            raise RuntimeError("MPS device not available")
+            LOGGER.warning("MPS requested but not available; falling back to CPU for diffusion")
+            device = "cpu"
 
-        if device not in {"cuda", "mps"}:
-            LOGGER.error("Diffusion requires a GPU (CUDA or MPS); got %s", device)
-            raise RuntimeError("GPU execution is required for diffusion")
+        if device not in {"cuda", "mps", "cpu"}:
+            LOGGER.error("Diffusion requires a valid device; got %s", device)
+            raise RuntimeError("Unsupported device for diffusion")
 
         self.device = device
         if self.device == "cuda" and not torch.cuda.is_bf16_supported():
             LOGGER.info("BF16 not supported on this CUDA device; using float16 for diffusion")
             dtype = torch.float16
+        elif self.device == "cpu":
+            LOGGER.warning("Running diffusion pipeline on CPU; performance will be significantly degraded")
+            dtype = torch.float32
         else:
             dtype = torch.bfloat16 if self.device == "cuda" else torch.float16
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)

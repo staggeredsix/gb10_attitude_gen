@@ -62,8 +62,8 @@ class AppConfig:
             LOGGER.info("Metal Performance Shaders backend detected; using MPS")
             return "mps"
 
-        LOGGER.error("No CUDA or MPS devices detected; GPU execution is required")
-        raise RuntimeError("GPU execution is required")
+        LOGGER.warning("No GPU detected, get into container and troubleshoot")
+        return "cpu"
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
