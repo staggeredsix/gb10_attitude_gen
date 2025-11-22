@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 import cv2
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class EmotionClassifier:
 
         LOGGER.info("Loading emotion VLM: %s on %s", model_name, device)
         self.processor = AutoProcessor.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = AutoModelForVision2Seq.from_pretrained(
             model_name,
             torch_dtype=dtype,
         ).to(device)
