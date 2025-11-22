@@ -1,49 +1,34 @@
 FROM nvidia/cuda:13.0.0-runtime-ubuntu22.04
 
-ARG HUGGINGFACE_TOKEN
-ARG HF_TOKEN
-ARG HUGGINGFACE_HUB_TOKEN
-
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_INDEX_URL=https://download.pytorch.org/whl/nightly/cu130 \
-    PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+    PIP_EXTRA_INDEX_URL=https://pypi.org/simple \
+    HF_HOME=/models/huggingface \
+    HUGGINGFACE_HUB_CACHE=/models/huggingface/hub
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
-    libgl1 \
-    libglib2.0-0 \
-    openssl \
+RUN apt-get update \ 
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-venv \
+        libgl1 \
+        libglib2.0-0 \
+        openssl \ 
     && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /models
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY scripts/container_entrypoint.sh /usr/local/bin/container_entrypoint.sh
 
-RUN pip install --upgrade pip && \
-    pip install . && \
-    HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN} HF_TOKEN=${HF_TOKEN} HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN} python3 - <<'PY'
-from huggingface_hub import snapshot_download
-import os
+RUN chmod +x /usr/local/bin/container_entrypoint.sh \
+    && python3 -m pip install --upgrade pip \
+    && pip install .
 
-models = [
-    ("emotion", "Qwen/Qwen2-VL-2B-Instruct"),
-    ("diffusion", "black-forest-labs/FLUX.1-schnell"),
-    ("controlnet", "InstantX/FLUX.1-dev-Controlnet-Union"),
-    ("face-segmentation", "briaai/RMBG-1.4"),
-]
+VOLUME ["/models"]
 
-token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-
-for label, repo in models:
-    print(f"[preload] downloading {label}: {repo}")
-    download_kwargs = {"repo_id": repo, "local_files_only": False}
-    if token:
-        download_kwargs["token"] = token
-    snapshot_download(**download_kwargs)
-PY
-
+ENTRYPOINT ["/usr/local/bin/container_entrypoint.sh"]
 CMD ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Single-node setup helper for AI Mood Mirror
+# - Downloads required models to ./models
 # - Builds the container image
 # - Launches the web UI on the local host
 # - Prints connection info when ready
@@ -40,6 +41,9 @@ require() {
 
 require docker
 require docker compose
+
+echo "[info] Downloading models into ${REPO_ROOT}/models"
+"${REPO_ROOT}/scripts/download_models.sh"
 
 echo "[info] Building ${IMAGE_TAG} from ${REPO_ROOT}"
 DOCKER_BUILDKIT=1 docker build -t "${IMAGE_TAG}" "${REPO_ROOT}"
