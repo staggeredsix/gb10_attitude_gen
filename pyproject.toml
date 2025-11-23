@@ -20,6 +20,8 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pillow",
+    "protobuf",
+    "sentencepiece",
 ]
 
 [project.scripts]
