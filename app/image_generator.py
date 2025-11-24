@@ -118,6 +118,7 @@ class ImageGenerator:
 
     def _install_quantization_guard(self) -> None:
         original_merge = DiffusersAutoQuantizer.merge_quantization_configs
+        original_from_config = DiffusersAutoQuantizer.from_config
 
         def _safe_merge(cls, quantization_config, quantization_config_from_args):
             try:
@@ -135,6 +136,27 @@ class ImageGenerator:
                 raise
 
         DiffusersAutoQuantizer.merge_quantization_configs = classmethod(_safe_merge)
+
+        def _safe_from_config(cls, quantization_config, **kwargs):
+            if quantization_config is None:
+                LOGGER.warning(
+                    "Quantization config missing or incomplete; loading model without quantization"
+                )
+                return None
+
+            quant_method = (
+                quantization_config.get("quant_method")
+                if isinstance(quantization_config, dict)
+                else getattr(quantization_config, "quant_method", None)
+            )
+            if quant_method is None:
+                LOGGER.warning(
+                    "Quantization config missing or incomplete; loading model without quantization"
+                )
+                return None
+            return original_from_config.__func__(cls, quantization_config, **kwargs)
+
+        DiffusersAutoQuantizer.from_config = classmethod(_safe_from_config)
 
     @staticmethod
     def _is_cuda_usable(device: torch.device) -> bool:
