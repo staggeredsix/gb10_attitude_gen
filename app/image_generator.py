@@ -65,13 +65,16 @@ class ImageGenerator:
 
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)
-        controlnet = FluxControlNetModel.from_pretrained(controlnet_name, torch_dtype=dtype)
+        controlnet = FluxControlNetModel.from_pretrained(
+            controlnet_name, torch_dtype=dtype, trust_remote_code=True
+        )
 
         LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, self.device)
         pipe = FluxControlNetPipeline.from_pretrained(
             model_name,
             controlnet=controlnet,
             torch_dtype=dtype,
+            trust_remote_code=True,
         )
 
 
