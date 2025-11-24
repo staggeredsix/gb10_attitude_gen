@@ -11,11 +11,9 @@ import numpy as np
 
 from .camera import Camera
 from .config import AppConfig, load_config, parse_args
-from .emotion_classifier import EmotionClassifier
-from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .image_generator import ImageGenerator
-from .prompt_builder import MoodStyleController
-from .ui import annotate_emotion, show_window
+from .prompt_builder import build_whimsical_prompt
+from .ui import show_window
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,21 +24,15 @@ def run(config: AppConfig) -> None:
     LOGGER.info("Starting AI Mood Mirror on %s", config.device)
 
     try:
-        classifier = EmotionClassifier(config.emotion_model, config.device)
         diffusion_device = config.diffusion_device or config.device
         generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, diffusion_device
-        )
-        segmenter = FaceSegmenter(
-            config.face_segmentation_model, config.device, config.segmentation_min_area
         )
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Failed to initialize models: %s", exc)
         return
 
     generated_img: Optional[np.ndarray] = None
-    style_controller = MoodStyleController(transition_seconds=10.0)
-    last_mask: Optional[np.ndarray] = None
 
     try:
         with Camera(config.camera_index) as camera:
@@ -53,17 +45,9 @@ def run(config: AppConfig) -> None:
 
                 resized_frame = generator.resize_to_output(frame)
 
-                segmentation = segmenter.segment(resized_frame)
-                if segmentation is not None:
-                    last_mask = segmentation.mask
-                masked_frame = apply_subject_mask(resized_frame, last_mask)
-
-                emotion: Optional[str] = classifier.classify(masked_frame)
-                frame = annotate_emotion(frame, emotion)
-
-                prompt = style_controller.build_prompt(emotion)
+                prompt = build_whimsical_prompt()
                 generated = generator.generate(
-                    prompt, masked_frame, previous_output=generated_img
+                    prompt, resized_frame, previous_output=generated_img
                 )
                 if generated is not None:
                     generated_img = generated

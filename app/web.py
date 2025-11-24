@@ -18,10 +18,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
-from .emotion_classifier import EmotionClassifier
-from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .image_generator import ImageGenerator
-from .prompt_builder import STYLE_MAP, MoodStyleController
+from .prompt_builder import STYLE_MAP, build_whimsical_prompt
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,16 +28,11 @@ LOGGER = logging.getLogger(__name__)
 class SessionState:
     """Track generation state for a websocket client."""
 
-    last_emotion: Optional[str] = None
     last_gen_time: float = 0.0
     generated_img: Optional[np.ndarray] = None
     has_pending_image: bool = False
     mode: str = "single"
     last_latency_ms: Optional[float] = None
-    last_mask: Optional[np.ndarray] = None
-    style_controller: MoodStyleController = field(
-        default_factory=lambda: MoodStyleController(transition_seconds=10.0)
-    )
 
 
 class InferencePipeline:
@@ -47,16 +40,11 @@ class InferencePipeline:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
         )
-        self.segmenter = FaceSegmenter(
-            config.face_segmentation_model, config.device, config.segmentation_min_area
-        )
         LOGGER.info(
-            "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s)",
-            config.emotion_model,
+            "Models ready (diffusion='%s', controlnet='%s', device=%s)",
             config.diffusion_model,
             config.controlnet_model,
             config.device,
@@ -64,33 +52,25 @@ class InferencePipeline:
 
     def process(
         self, frame: cv2.typing.MatLike, style_key: Optional[str], mode: str, state: SessionState
-    ) -> tuple[Optional[str], Optional[np.ndarray], bool, Optional[float]]:
+    ) -> tuple[Optional[np.ndarray], bool, Optional[float]]:
         """Process a frame and update session state as needed."""
 
         resized = self.generator.resize_to_output(frame)
-
-        segmentation = self.segmenter.segment(resized)
-        if segmentation is not None:
-            state.last_mask = segmentation.mask
-        masked_frame = apply_subject_mask(resized, state.last_mask)
-
-        emotion: Optional[str] = self.classifier.classify(masked_frame)
         gen_latency_ms: Optional[float] = None
 
         state.mode = mode if mode in {"single", "dual"} else state.mode
 
-        prompt = state.style_controller.build_prompt(emotion, style_key)
+        prompt = build_whimsical_prompt(style_key)
         gen_start = time.time()
-        generated = self.generator.generate(prompt, masked_frame, previous_output=state.generated_img)
+        generated = self.generator.generate(prompt, resized, previous_output=state.generated_img)
         if generated is not None:
             state.generated_img = generated
-            state.last_emotion = emotion
             state.last_gen_time = gen_start
             state.has_pending_image = True
             gen_latency_ms = (time.time() - gen_start) * 1000
             state.last_latency_ms = gen_latency_ms
 
-        return emotion, state.generated_img, state.has_pending_image, gen_latency_ms or state.last_latency_ms
+        return state.generated_img, state.has_pending_image, gen_latency_ms or state.last_latency_ms
 
 
 def _decode_frame(data_url: str) -> Optional[np.ndarray]:
@@ -415,7 +395,7 @@ def _build_html(default_mode: str) -> str:
     <body>
         <header>
             <h1>AI Mood Mirror</h1>
-            <p class="subhead">Stream your webcam or upload a portrait. We infer the mood from the full frame and send it to the diffusion model to generate a live portrait.</p>
+            <p class="subhead">Stream your webcam or upload a portrait. Frames are fed directly into the diffusion model to generate a fast, whimsical portrait.</p>
         </header>
 
         <main>
@@ -545,13 +525,14 @@ def _build_html(default_mode: str) -> str:
                     preview.style.display = 'none';
                     await webcamEl.play();
                     setStatus('Streaming from webcam');
+                    const intervalMs = 1000 / 15; // Limit to 15 FPS for incoming video
                     frameTimer = setInterval(() => {
                         const dataUrl = captureFrame(webcamEl);
                         if (dataUrl) {
                             portrait.dataset.lastSource = 'webcam';
                             sendFrame(dataUrl);
                         }
-                    }, 600);
+                    }, intervalMs);
                 } catch (error) {
                     console.error(error);
                     setStatus('Unable to access webcam', false);
@@ -599,15 +580,10 @@ def _build_html(default_mode: str) -> str:
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
                     if (payload.status === 'models_ready') {
-                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}.`);
+                        setStatus(`Models ready on ${payload.device}. Diffusion: ${payload.diffusion_model}.`);
                         return;
                     }
 
-                    if (payload.emotion) {
-                        setStatus(`Emotion: ${payload.emotion}`);
-                    } else {
-                        setStatus('Awaiting emotion signal');
-                    }
                     if (payload.mode) {
                         inferenceMode = payload.mode;
                         modeSelect.value = payload.mode;
@@ -618,6 +594,7 @@ def _build_html(default_mode: str) -> str:
                     }
                     if (payload.generated_image) {
                         portrait.src = `data:image/jpeg;base64,${payload.generated_image}`;
+                        setStatus('New portrait ready');
                     }
                 };
             }
@@ -700,7 +677,6 @@ def create_app(config: AppConfig) -> FastAPI:
         await websocket.send_json(
             {
                 "status": "models_ready",
-                "emotion_model": config.emotion_model,
                 "diffusion_model": config.diffusion_model,
                 "device": config.device,
             }
@@ -719,9 +695,8 @@ def create_app(config: AppConfig) -> FastAPI:
                     await websocket.send_json({"error": "invalid_frame"})
                     continue
 
-                emotion, generated, has_pending, latency_ms = pipeline.process(frame, style_key, mode, state)
+                generated, has_pending, latency_ms = pipeline.process(frame, style_key, mode, state)
                 response: dict[str, Optional[str]] = {
-                    "emotion": emotion,
                     "style": style_key,
                     "mode": state.mode,
                 }
