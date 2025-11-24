@@ -138,8 +138,18 @@ class ImageGenerator:
         DiffusersAutoQuantizer.merge_quantization_configs = classmethod(_safe_merge)
 
         def _safe_from_config(cls, quantization_config, **kwargs):
-            quant_method = getattr(quantization_config, "quant_method", None)
-            if quantization_config is None or quant_method is None:
+            if quantization_config is None:
+                LOGGER.warning(
+                    "Quantization config missing or incomplete; loading model without quantization"
+                )
+                return None
+
+            quant_method = (
+                quantization_config.get("quant_method")
+                if isinstance(quantization_config, dict)
+                else getattr(quantization_config, "quant_method", None)
+            )
+            if quant_method is None:
                 LOGGER.warning(
                     "Quantization config missing or incomplete; loading model without quantization"
                 )
