@@ -69,7 +69,12 @@ class ImageGenerator:
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)
         controlnet = FluxControlNetModel.from_pretrained(
-            controlnet_name, torch_dtype=dtype, trust_remote_code=True
+            controlnet_name,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            # Community checkpoints may have mismatched shapes; allow loading with
+            # random initialization for incompatible tensors to keep the app running.
+            ignore_mismatched_sizes=True,
         )
 
         try:
@@ -96,6 +101,7 @@ class ImageGenerator:
             transformer=transformer,
             torch_dtype=dtype,
             trust_remote_code=True,
+            ignore_mismatched_sizes=True,
         )
 
 
