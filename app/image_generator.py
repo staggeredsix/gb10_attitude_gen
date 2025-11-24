@@ -9,7 +9,8 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from diffusers import FluxControlNetModel, FluxControlNetPipeline
+from diffusers import FluxControlNetModel, FluxControlNetPipeline, FluxTransformer2DModel
+from diffusers.quantizers.auto import DiffusersAutoQuantizer
 from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
@@ -26,6 +27,8 @@ class ImageGenerator:
 
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
         resolved = torch.device(device)
+
+        self._install_quantization_guard()
 
         if resolved.type == "cuda" and not torch.cuda.is_available():
             LOGGER.warning("CUDA requested but not available; falling back to CPU for diffusion")
@@ -69,10 +72,24 @@ class ImageGenerator:
             controlnet_name, torch_dtype=dtype, trust_remote_code=True
         )
 
+        try:
+            import bitsandbytes as bnb  # noqa: F401
+        except ImportError:  # pragma: no cover - runtime dependency check
+            LOGGER.warning("bitsandbytes is not installed; quantized FLUX models may fail to load")
+
+        LOGGER.info("Loading FLUX transformer weights from %s", model_name)
+        transformer = FluxTransformer2DModel.from_pretrained(
+            model_name,
+            subfolder="transformer",
+            torch_dtype=dtype,
+            trust_remote_code=True,
+        )
+
         LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, self.device)
         pipe = FluxControlNetPipeline.from_pretrained(
             model_name,
             controlnet=controlnet,
+            transformer=transformer,
             torch_dtype=dtype,
             trust_remote_code=True,
         )
@@ -98,6 +115,26 @@ class ImageGenerator:
         LOGGER.info("FLUX ControlNet pipeline is ready on %s", self.device)
 
         return _PipelineBundle(pipeline=pipe, dtype=dtype)
+
+    def _install_quantization_guard(self) -> None:
+        original_merge = DiffusersAutoQuantizer.merge_quantization_configs
+
+        def _safe_merge(cls, quantization_config, quantization_config_from_args):
+            try:
+                return original_merge(quantization_config, quantization_config_from_args)
+            except ValueError as err:
+                message = str(err)
+                if "Unknown quantization type" in message:
+                    LOGGER.warning(
+                        "Ignoring unsupported quantization config '%s'; loading model without quantization",
+                        getattr(quantization_config, "get", lambda key, default=None: None)(
+                            "quant_method", None
+                        ),
+                    )
+                    return None
+                raise
+
+        DiffusersAutoQuantizer.merge_quantization_configs = classmethod(_safe_merge)
 
     @staticmethod
     def _is_cuda_usable(device: torch.device) -> bool:
