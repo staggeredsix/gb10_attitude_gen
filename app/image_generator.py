@@ -25,27 +25,32 @@ class ImageGenerator:
     """Generate images from text prompts using a diffusion pipeline conditioned on webcam input."""
 
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
-        if device == "cuda" and not torch.cuda.is_available():
+        resolved = torch.device(device)
+
+        if resolved.type == "cuda" and not torch.cuda.is_available():
             LOGGER.warning("CUDA requested but not available; falling back to CPU for diffusion")
-            device = "cpu"
+            resolved = torch.device("cpu")
 
-        if device == "mps" and not torch.backends.mps.is_available():
+        if resolved.type == "mps" and not torch.backends.mps.is_available():
             LOGGER.warning("MPS requested but not available; falling back to CPU for diffusion")
-            device = "cpu"
+            resolved = torch.device("cpu")
 
-        if device not in {"cuda", "mps", "cpu"}:
+        if resolved.type not in {"cuda", "mps", "cpu"}:
             LOGGER.error("Diffusion requires a valid device; got %s", device)
             raise RuntimeError("Unsupported device for diffusion")
 
-        self.device = device
-        if self.device == "cuda" and not torch.cuda.is_bf16_supported():
+        self.device = resolved
+        if self.device.type == "cuda" and not torch.cuda.is_bf16_supported():
             LOGGER.info("BF16 not supported on this CUDA device; using float16 for diffusion")
             dtype = torch.float16
-        elif self.device == "cpu":
+        elif self.device.type == "cpu":
             LOGGER.warning("Running diffusion pipeline on CPU; performance will be significantly degraded")
             dtype = torch.float32
         else:
-            dtype = torch.bfloat16 if self.device == "cuda" else torch.float16
+            dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float16
+        self.num_inference_steps = 4
+        self.guidance_scale = 3.0
+        self.conditioning_scale = 0.85
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
         controlnet_config = self.bundle.pipeline.controlnet.config
@@ -70,6 +75,14 @@ class ImageGenerator:
             pipe.enable_xformers_memory_efficient_attention()
         except Exception:  # noqa: BLE001
             LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
+        pipe.enable_attention_slicing()
+        pipe.enable_vae_slicing()
+        pipe.set_progress_bar_config(disable=True)
+        if torch.backends.cudnn.is_available():
+            torch.backends.cudnn.benchmark = True
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+
         LOGGER.info("Pushing FLUX pipeline to %s with dtype=%s", self.device, dtype)
         pipe.to(device=self.device, dtype=dtype)
         LOGGER.info("FLUX ControlNet pipeline is ready on %s", self.device)
@@ -105,20 +118,19 @@ class ImageGenerator:
         LOGGER.info("Generating image for prompt: %s", prompt)
         try:
             autocast_ctx = (
-                torch.autocast(device_type="cuda", dtype=self.bundle.dtype)
-                if self.device == "cuda"
+                torch.autocast(device_type=self.device.type, dtype=self.bundle.dtype)
+                if self.device.type == "cuda"
                 else nullcontext()
             )
             with torch.inference_mode(), autocast_ctx:
                 control_pil = self._prepare_control_image(init_image)
-                steps = 6
                 result = self.bundle.pipeline(
                     prompt=prompt,
                     control_image=control_pil,
                     control_mode=self.control_mode,
-                    num_inference_steps=steps,
-                    guidance_scale=3.5,
-                    controlnet_conditioning_scale=0.9,
+                    num_inference_steps=self.num_inference_steps,
+                    guidance_scale=self.guidance_scale,
+                    controlnet_conditioning_scale=self.conditioning_scale,
                     output_type="np",
                 )
                 image = result.images[0]

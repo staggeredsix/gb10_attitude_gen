@@ -32,6 +32,7 @@ class AppConfig:
     face_segmentation_model: str = "briaai/RMBG-1.4"
     segmentation_min_area: float = 0.01
     generation_interval: float = 3.0
+    diffusion_device: Optional[str] = None
     use_cuda: bool = True
     show_windows: bool = True
     server_host: str = "0.0.0.0"
@@ -77,6 +78,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--controlnet-model",
         type=str,
         help="Model id for the ControlNet used to condition generation on the webcam image",
+    )
+    parser.add_argument(
+        "--diffusion-device",
+        type=str,
+        help="Torch device string for running FLUX diffusion (e.g., cuda:1 for dedicated GPU)",
     )
     parser.add_argument("--face-segmentation-model", type=str, help="Model id for face segmentation")
     parser.add_argument(
@@ -124,6 +130,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_face_seg_model = os.getenv(f"{ENV_PREFIX}FACE_SEGMENTATION_MODEL")
     env_seg_min_area = os.getenv(f"{ENV_PREFIX}SEGMENTATION_MIN_AREA")
     env_gen_interval = os.getenv(f"{ENV_PREFIX}GENERATION_INTERVAL")
+    env_diffusion_device = os.getenv(f"{ENV_PREFIX}DIFFUSION_DEVICE")
     env_use_cuda = _bool_env(f"{ENV_PREFIX}USE_CUDA", True)
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
@@ -156,6 +163,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         if args.generation_interval is not None
         else float(env_gen_interval) if env_gen_interval else 3.0
     )
+    diffusion_device = args.diffusion_device if args.diffusion_device else env_diffusion_device
 
     use_cuda = env_use_cuda if args.use_cuda is None else args.use_cuda
     show_windows = args.show_windows
@@ -174,6 +182,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         face_segmentation_model=face_seg_model,
         segmentation_min_area=segmentation_min_area,
         generation_interval=generation_interval,
+        diffusion_device=diffusion_device,
         use_cuda=use_cuda,
         show_windows=show_windows,
         server_host=server_host,
