@@ -18,7 +18,7 @@ from huggingface_hub import snapshot_download
 
 MODELS = {
     "emotion": "Qwen/Qwen2-VL-2B-Instruct",
-    "diffusion": "black-forest-labs/FLUX.1-schnell",
+    "diffusion": "Disty0/FLUX.1-schnell-SDNQ-uint4-svd-r32",
     "controlnet": "InstantX/FLUX.1-dev-Controlnet-Union",
     "face-segmentation": "briaai/RMBG-1.4",
 }
