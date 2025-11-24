@@ -76,7 +76,10 @@ class ImageGenerator:
         except Exception:  # noqa: BLE001
             LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
         pipe.enable_attention_slicing()
-        pipe.enable_vae_slicing()
+        if hasattr(pipe, "enable_vae_slicing"):
+            pipe.enable_vae_slicing()
+        else:
+            LOGGER.debug("Pipeline does not support VAE slicing; skipping enable_vae_slicing")
         pipe.set_progress_bar_config(disable=True)
         if torch.backends.cudnn.is_available():
             torch.backends.cudnn.benchmark = True
