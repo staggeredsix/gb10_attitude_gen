@@ -96,7 +96,19 @@ class EmotionClassifier:
             "emotion from this list: angry, disgust, fear, happy, sad, surprise, neutral. "
             "Respond with only the label."
         )
-        inputs = self.processor(images=rgb, text=prompt, return_tensors="pt").to(self.device)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image"},
+                ],
+            }
+        ]
+        chat = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = self.processor(text=[chat], images=[rgb], return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model.generate(**inputs, max_new_tokens=8)
         text = self.processor.batch_decode(outputs, skip_special_tokens=True)[0]
