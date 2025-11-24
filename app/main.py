@@ -77,7 +77,7 @@ def run(config: AppConfig) -> None:
 
                 if should_generate:
                     prompt = build_prompt(emotion)
-                    generated = generator.generate(prompt, face)
+                    generated = generator.generate(prompt, face, previous_output=generated_img)
                     if generated is not None:
                         generated_img = generated
                         last_emotion = emotion

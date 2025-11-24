@@ -82,7 +82,19 @@ class ImageGenerator:
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
         return Image.fromarray(control)
 
-    def generate(self, prompt: str, init_image: np.ndarray | None) -> Optional[np.ndarray]:
+    def _blend_frames(self, new_image: np.ndarray, previous_image: np.ndarray | None) -> np.ndarray:
+        if previous_image is None:
+            return new_image
+
+        if previous_image.shape != new_image.shape:
+            previous_image = cv2.resize(previous_image, (new_image.shape[1], new_image.shape[0]))
+
+        blend_ratio = 0.35  # prioritize prior frame to maintain visual continuity
+        return cv2.addWeighted(new_image, blend_ratio, previous_image, 1 - blend_ratio, 0)
+
+    def generate(
+        self, prompt: str, init_image: np.ndarray | None, previous_output: np.ndarray | None = None
+    ) -> Optional[np.ndarray]:
         """Generate an image for the given prompt and return a BGR numpy array."""
 
         if init_image is None:
@@ -115,7 +127,8 @@ class ImageGenerator:
                 image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
 
             image_uint8 = np.clip(image * 255, 0, 255).astype(np.uint8)
-            return cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR)
+            blended = self._blend_frames(cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR), previous_output)
+            return blended
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Image generation failed: %s", exc)
             return None
