@@ -49,9 +49,9 @@ class ImageGenerator:
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
         controlnet_config = self.bundle.pipeline.controlnet.config
-        self.controlnet_mode = 0 if getattr(controlnet_config, "union", False) else None
-        if self.controlnet_mode is not None:
-            LOGGER.info("ControlNet-Union detected; defaulting controlnet_mode to canny (0)")
+        self.control_mode = 0 if getattr(controlnet_config, "union", False) else None
+        if self.control_mode is not None:
+            LOGGER.info("ControlNet-Union detected; defaulting control_mode to canny (0)")
 
     def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)
@@ -102,7 +102,7 @@ class ImageGenerator:
                 result = self.bundle.pipeline(
                     prompt=prompt,
                     control_image=control_pil,
-                    controlnet_mode=self.controlnet_mode,
+                    control_mode=self.control_mode,
                     num_inference_steps=steps,
                     guidance_scale=3.5,
                     controlnet_conditioning_scale=0.9,
