@@ -13,6 +13,7 @@ dependencies = [
     "opencv-python",
     "torch",
     "torchvision",
+    "bitsandbytes",
     "accelerate",
     "transformers",
     "diffusers",
