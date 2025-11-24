@@ -82,49 +82,65 @@ class ImageGenerator:
         except ImportError:  # pragma: no cover - runtime dependency check
             LOGGER.warning("bitsandbytes is not installed; quantized FLUX models may fail to load")
 
-        LOGGER.info("Loading FLUX transformer weights from %s", model_name)
-        transformer = FluxTransformer2DModel.from_pretrained(
-            model_name,
-            subfolder="transformer",
-            torch_dtype=dtype,
-            trust_remote_code=True,
-            # Some FLUX community weights ship mismatched shapes; allow loading with
-            # random init for incompatible tensors to keep the app running.
-            low_cpu_mem_usage=False,
-            ignore_mismatched_sizes=True,
-        )
+        def _build_pipeline(target_model: str) -> _PipelineBundle:
+            LOGGER.info("Loading FLUX transformer weights from %s", target_model)
+            transformer = FluxTransformer2DModel.from_pretrained(
+                target_model,
+                subfolder="transformer",
+                torch_dtype=dtype,
+                trust_remote_code=True,
+                # Some FLUX community weights ship mismatched shapes; allow loading with
+                # random init for incompatible tensors to keep the app running.
+                low_cpu_mem_usage=False,
+                ignore_mismatched_sizes=True,
+            )
 
-        LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, self.device)
-        pipe = FluxControlNetPipeline.from_pretrained(
-            model_name,
-            controlnet=controlnet,
-            transformer=transformer,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-            ignore_mismatched_sizes=True,
-        )
+            LOGGER.info("Loading diffusion pipeline: %s on %s", target_model, self.device)
+            pipe = FluxControlNetPipeline.from_pretrained(
+                target_model,
+                controlnet=controlnet,
+                transformer=transformer,
+                torch_dtype=dtype,
+            )
 
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
+            pipe.enable_attention_slicing()
+            if hasattr(pipe, "enable_vae_slicing"):
+                pipe.enable_vae_slicing()
+            else:
+                LOGGER.debug("Pipeline does not support VAE slicing; skipping enable_vae_slicing")
+            pipe.set_progress_bar_config(disable=True)
+            if torch.backends.cudnn.is_available():
+                torch.backends.cudnn.benchmark = True
+            if torch.cuda.is_available():
+                torch.backends.cuda.matmul.allow_tf32 = True
+
+            LOGGER.info("Pushing FLUX pipeline to %s with dtype=%s", self.device, dtype)
+            pipe.to(device=self.device, dtype=dtype)
+            LOGGER.info("FLUX ControlNet pipeline is ready on %s", self.device)
+
+            return _PipelineBundle(pipeline=pipe, dtype=dtype)
 
         try:
-            pipe.enable_xformers_memory_efficient_attention()
-        except Exception:  # noqa: BLE001
-            LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
-        pipe.enable_attention_slicing()
-        if hasattr(pipe, "enable_vae_slicing"):
-            pipe.enable_vae_slicing()
-        else:
-            LOGGER.debug("Pipeline does not support VAE slicing; skipping enable_vae_slicing")
-        pipe.set_progress_bar_config(disable=True)
-        if torch.backends.cudnn.is_available():
-            torch.backends.cudnn.benchmark = True
-        if torch.cuda.is_available():
-            torch.backends.cuda.matmul.allow_tf32 = True
-
-        LOGGER.info("Pushing FLUX pipeline to %s with dtype=%s", self.device, dtype)
-        pipe.to(device=self.device, dtype=dtype)
-        LOGGER.info("FLUX ControlNet pipeline is ready on %s", self.device)
-
-        return _PipelineBundle(pipeline=pipe, dtype=dtype)
+            return _build_pipeline(model_name)
+        except RuntimeError as err:
+            message = str(err).lower()
+            fallback_model = "black-forest-labs/FLUX.1-schnell"
+            should_retry = (
+                ("size mismatch" in message or "mismatched" in message)
+                and model_name != fallback_model
+            )
+            if should_retry:
+                LOGGER.warning(
+                    "Failed to load diffusion model '%s' due to incompatible weights; retrying with fallback '%s'",
+                    model_name,
+                    fallback_model,
+                )
+                return _build_pipeline(fallback_model)
+            raise
 
     def _install_quantization_guard(self) -> None:
         original_merge = DiffusersAutoQuantizer.merge_quantization_configs

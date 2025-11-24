@@ -47,7 +47,7 @@ Useful flags:
 
 - `--camera-index`: Webcam index (default `0`, used only by the legacy OpenCV mode).
 - `--emotion-model`: Hugging Face model id for emotion detection.
-- `--diffusion-model`: Diffusion model id (default `Disty0/FLUX.1-schnell-SDNQ-uint4-svd-r32`).
+- `--diffusion-model`: Diffusion model id (default `black-forest-labs/FLUX.1-schnell`).
 
 - `--controlnet-model`: ControlNet id to condition on the webcam frame (default `InstantX/FLUX.1-dev-Controlnet-Union`).
 - `--face-segmentation-model`: Hugging Face model id for face segmentation.
