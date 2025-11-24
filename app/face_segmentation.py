@@ -78,9 +78,7 @@ class FaceSegmenter:
 
         LOGGER.info("Loading face segmentation model: %s on %s", model_name, device)
         try:
-            self.processor = AutoImageProcessor.from_pretrained(
-                model_name, trust_remote_code=True
-            )
+            self.processor = self._load_processor(model_name)
             self.model = AutoModelForImageSegmentation.from_pretrained(
                 model_name,
                 torch_dtype=dtype,
@@ -101,6 +99,28 @@ class FaceSegmenter:
                 LOGGER.info("Loaded OpenCV Haar cascade fallback for face detection")
             except Exception as cascade_err:  # noqa: BLE001
                 LOGGER.error("Fallback face detection unavailable: %s", cascade_err)
+
+    @staticmethod
+    def _load_processor(model_name: str):
+        """Load a compatible image processor for the segmentation model."""
+
+        attempts = (
+            ("AutoProcessor", lambda: AutoProcessor.from_pretrained(model_name, trust_remote_code=True)),
+            ("AutoImageProcessor", lambda: AutoImageProcessor.from_pretrained(model_name, trust_remote_code=True)),
+            ("AutoFeatureExtractor", lambda: AutoFeatureExtractor.from_pretrained(model_name, trust_remote_code=True)),
+        )
+
+        errors: list[str] = []
+        for loader_name, loader in attempts:
+            try:
+                processor = loader()
+                LOGGER.info("Loaded %s for face segmentation model", loader_name)
+                return processor
+            except Exception as err:  # noqa: BLE001
+                LOGGER.debug("%s unavailable for %s: %s", loader_name, model_name, err)
+                errors.append(f"{loader_name}: {err}")
+
+        raise RuntimeError("No compatible processor found; tried " + "; ".join(errors))
 
     def segment(self, frame_bgr: cv2.typing.MatLike) -> Optional[SegmentationResult]:
         """Return a segmentation mask for the most prominent face."""
