@@ -298,7 +298,7 @@ class ImageGenerator:
         if previous_image.shape != new_image.shape:
             previous_image = cv2.resize(previous_image, (new_image.shape[1], new_image.shape[0]))
 
-        blend_ratio = 0.25  # prioritize prior frame to maintain visual continuity
+        blend_ratio = 0.2  # prioritize prior frame to maintain visual continuity
         return cv2.addWeighted(new_image, blend_ratio, previous_image, 1 - blend_ratio, 0)
 
     def _should_fallback_to_cpu(self, exc: Exception) -> bool:
@@ -329,7 +329,11 @@ class ImageGenerator:
 
             if previous_output is not None:
                 blended_condition = cv2.addWeighted(
-                    init_image, 0.55, cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0])), 0.45, 0
+                    init_image,
+                    0.45,
+                    cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0])),
+                    0.55,
+                    0,
                 )
                 pipeline_kwargs["image"] = Image.fromarray(
                     cv2.cvtColor(blended_condition.astype(np.uint8), cv2.COLOR_BGR2RGB)

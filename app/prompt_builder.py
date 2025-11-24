@@ -1,7 +1,9 @@
-"""Prompt construction from detected emotions."""
+"""Prompt construction from detected emotions with gradual style transitions."""
 from __future__ import annotations
 
 import random
+import time
+from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 STYLE_MAP: Dict[str, str] = {
@@ -38,6 +40,60 @@ def _random_tail() -> str:
     return f"{whimsical}, {detail}"
 
 
+@dataclass
+class MoodStyleController:
+    """Track mood-to-style transitions and produce stabilized prompts."""
+
+    transition_seconds: float = 10.0
+    _source_emotion: str = "neutral"
+    _target_emotion: str = "neutral"
+    _progress: float = 1.0
+    _last_update: float = field(default_factory=time.time)
+    _tail: str = field(default_factory=_random_tail)
+
+    def _blend_styles(self, style_key: str, target_key: str, weight: float) -> str:
+        """Return a descriptive blend of the current and target styles."""
+
+        source_style = STYLE_MAP.get(style_key, STYLE_MAP["neutral"])
+        target_style = STYLE_MAP.get(target_key, STYLE_MAP["neutral"])
+        weight_pct = int(weight * 100)
+        return (
+            f"palette is {100 - weight_pct}% {self._source_emotion} ({source_style}) and "
+            f"{weight_pct}% {self._target_emotion} ({target_style}), gentle hue roll-off, stable lighting"
+        )
+
+    def _advance(self) -> float:
+        now = time.time()
+        elapsed = max(0.0, now - self._last_update)
+        self._last_update = now
+        increment = elapsed / max(0.5, self.transition_seconds)
+        self._progress = min(1.0, self._progress + increment)
+        if self._progress >= 1.0:
+            self._source_emotion = self._target_emotion
+        return self._progress
+
+    def build_prompt(self, emotion: Optional[str], style_key: Optional[str] = None) -> str:
+        """Return a flux diffusion prompt that eases between moods."""
+
+        new_target = emotion or self._target_emotion or "neutral"
+        if new_target != self._target_emotion:
+            self._source_emotion = self._target_emotion
+            self._target_emotion = new_target
+            self._progress = 0.0
+            self._tail = _random_tail()
+
+        progress = self._advance()
+        blend_style_key = style_key or self._source_emotion
+        target_style_key = style_key or self._target_emotion
+        blended_style = self._blend_styles(blend_style_key, target_style_key, progress)
+
+        return (
+            "a surreal artistic portrait of the person, "
+            f"mood drifting toward {self._target_emotion}, {blended_style}, "
+            f"{self._tail}, soft continuity between frames, minimal color swings"
+        )
+
+
 def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
     """Return a flux diffusion prompt given an emotion and style template."""
 
@@ -48,4 +104,4 @@ def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
     )
 
 
-__all__ = ["build_prompt", "STYLE_MAP"]
+__all__ = ["build_prompt", "STYLE_MAP", "MoodStyleController"]
