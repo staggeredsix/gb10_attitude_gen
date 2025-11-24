@@ -101,6 +101,7 @@ class ImageGenerator:
                 controlnet=controlnet,
                 transformer=transformer,
                 torch_dtype=dtype,
+                trust_remote_code=True,
             )
 
             try:
