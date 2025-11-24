@@ -6,7 +6,7 @@ import logging
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
 from typing import Optional
@@ -19,8 +19,9 @@ from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
 from .emotion_classifier import EmotionClassifier
+from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .image_generator import ImageGenerator
-from .prompt_builder import STYLE_MAP, build_prompt
+from .prompt_builder import STYLE_MAP, MoodStyleController
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +36,10 @@ class SessionState:
     has_pending_image: bool = False
     mode: str = "single"
     last_latency_ms: Optional[float] = None
+    last_mask: Optional[np.ndarray] = None
+    style_controller: MoodStyleController = field(
+        default_factory=lambda: MoodStyleController(transition_seconds=10.0)
+    )
 
 
 class InferencePipeline:
@@ -45,6 +50,9 @@ class InferencePipeline:
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
+        )
+        self.segmenter = FaceSegmenter(
+            config.face_segmentation_model, config.device, config.segmentation_min_area
         )
         LOGGER.info(
             "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s)",
@@ -60,31 +68,27 @@ class InferencePipeline:
         """Process a frame and update session state as needed."""
 
         resized = self.generator.resize_to_output(frame)
-        emotion: Optional[str] = self.classifier.classify(resized)
+
+        segmentation = self.segmenter.segment(resized)
+        if segmentation is not None:
+            state.last_mask = segmentation.mask
+        masked_frame = apply_subject_mask(resized, state.last_mask)
+
+        emotion: Optional[str] = self.classifier.classify(masked_frame)
         gen_latency_ms: Optional[float] = None
 
         state.mode = mode if mode in {"single", "dual"} else state.mode
 
-        now = time.time()
-        should_generate = (
-            emotion
-            and (
-                emotion != state.last_emotion
-                or now - state.last_gen_time > self.config.generation_interval
-            )
-        )
-
-        if should_generate:
-            prompt = build_prompt(emotion, style_key)
-            gen_start = time.time()
-            generated = self.generator.generate(prompt, resized)
-            if generated is not None:
-                state.generated_img = generated
-                state.last_emotion = emotion
-                state.last_gen_time = now
-                state.has_pending_image = True
-                gen_latency_ms = (time.time() - gen_start) * 1000
-                state.last_latency_ms = gen_latency_ms
+        prompt = state.style_controller.build_prompt(emotion, style_key)
+        gen_start = time.time()
+        generated = self.generator.generate(prompt, masked_frame, previous_output=state.generated_img)
+        if generated is not None:
+            state.generated_img = generated
+            state.last_emotion = emotion
+            state.last_gen_time = gen_start
+            state.has_pending_image = True
+            gen_latency_ms = (time.time() - gen_start) * 1000
+            state.last_latency_ms = gen_latency_ms
 
         return emotion, state.generated_img, state.has_pending_image, gen_latency_ms or state.last_latency_ms
 

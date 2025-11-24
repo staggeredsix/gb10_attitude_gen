@@ -49,6 +49,24 @@ class SegmentationResult:
         return masked
 
 
+def apply_subject_mask(frame_bgr: np.ndarray, mask: Optional[np.ndarray]) -> np.ndarray:
+    """Apply a soft subject mask to remove the background."""
+
+    if mask is None:
+        return frame_bgr
+
+    if mask.shape[:2] != frame_bgr.shape[:2]:
+        mask = cv2.resize(mask.astype(np.float32), (frame_bgr.shape[1], frame_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
+    mask_float = mask.astype(np.float32)
+    softened = cv2.GaussianBlur(mask_float, (7, 7), 0)
+    normalized = np.clip(softened, 0.0, 1.0)
+    mask_uint8 = (normalized * 255).astype(np.uint8)
+
+    foreground = cv2.bitwise_and(frame_bgr, frame_bgr, mask=mask_uint8)
+    background = np.zeros_like(frame_bgr)
+    return cv2.add(foreground, background)
+
+
 class FaceSegmenter:
     """Segment faces using a GPU-backed semantic segmentation model."""
 
@@ -170,4 +188,4 @@ class FaceSegmenter:
         return SegmentationResult(mask=face_mask, bbox=(x1, y1, x2, y2))
 
 
-__all__ = ["FaceSegmenter", "SegmentationResult"]
+__all__ = ["FaceSegmenter", "SegmentationResult", "apply_subject_mask"]
