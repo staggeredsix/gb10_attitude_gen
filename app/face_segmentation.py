@@ -27,8 +27,20 @@ class SegmentationResult:
     bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
 
     def crop_face(self, frame_bgr: cv2.typing.MatLike) -> Optional[np.ndarray]:
-        """Return a face crop using the bounding box with the mask applied."""
+        """Return a face crop using an expanded bounding box with the mask applied."""
+        height, width = frame_bgr.shape[:2]
         x1, y1, x2, y2 = self.bbox
+        box_w = x2 - x1
+        box_h = y2 - y1
+
+        # Expand the crop by 100% in both dimensions to capture full headgear
+        expand_x = box_w // 2
+        expand_y = box_h // 2
+        x1 = max(0, x1 - expand_x)
+        y1 = max(0, y1 - expand_y)
+        x2 = min(width, x2 + expand_x)
+        y2 = min(height, y2 + expand_y)
+
         roi = frame_bgr[y1:y2, x1:x2]
         if roi.size == 0:
             return None

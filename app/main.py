@@ -37,8 +37,9 @@ def run(config: AppConfig) -> None:
         segmenter = FaceSegmenter(
             config.face_segmentation_model, config.device, min_face_ratio=config.segmentation_min_area
         )
+        diffusion_device = config.diffusion_device or config.device
         generator = ImageGenerator(
-            config.diffusion_model, config.controlnet_model, config.device
+            config.diffusion_model, config.controlnet_model, diffusion_device
         )
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Failed to initialize models: %s", exc)
