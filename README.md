@@ -30,7 +30,8 @@ pip install .
 ## CLI usage
 
 Run the browser UI server (streams your webcam **from the browser**, so the backend never needs direct webcam access). The server
-binds HTTPS with an auto-generated self-signed certificate by default—click through the browser warning:
+listens over HTTP by default so you can open the page without TLS errors. Pass `--https` to generate a self-signed certificate if
+you want HTTPS:
 
 ```bash
 ai-mood-mirror-web --port 8000
@@ -55,8 +56,8 @@ Useful flags:
 - `--use-cuda` / `--no-cuda`: Force enable/disable CUDA (GPU is mandatory; disabling will raise an error).
 - `--no-ui`: Run headless without OpenCV windows.
 - `--host` / `--port`: Host/port for the web UI server (defaults `0.0.0.0:8000`).
-- `--https` / `--no-https`: Enable or disable HTTPS for the web UI (HTTPS is on by default and will generate a self-signed cert
-  if missing).
+- `--https` / `--no-https`: Enable or disable HTTPS for the web UI (HTTP is default; `--https` generates a self-signed cert if
+  missing).
 - `--ssl-certfile` / `--ssl-keyfile`: Provide your own certificate and key instead of the generated self-signed pair.
 
 Environment variables (fallbacks for the flags above) use the `AI_MOOD_MIRROR_` prefix, e.g. `AI_MOOD_MIRROR_CAMERA_INDEX`, `AI_MOOD_MIRROR_EMOTION_MODEL`, and `AI_MOOD_MIRROR_USE_CUDA`.

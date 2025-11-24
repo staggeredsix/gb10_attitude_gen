@@ -37,7 +37,7 @@ class AppConfig:
     server_host: str = "0.0.0.0"
     server_port: int = 8000
     default_mode: str = "single"
-    enable_https: bool = True
+    enable_https: bool = False
     ssl_certfile: Optional[str] = None
     ssl_keyfile: Optional[str] = None
 
@@ -128,7 +128,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_host = os.getenv(f"{ENV_PREFIX}HOST")
     env_port = os.getenv(f"{ENV_PREFIX}PORT")
     env_default_mode = os.getenv(f"{ENV_PREFIX}DEFAULT_MODE") or os.getenv("DEFAULT_MODE")
-    env_enable_https = _bool_env(f"{ENV_PREFIX}ENABLE_HTTPS", True)
+    env_enable_https = _bool_env(f"{ENV_PREFIX}ENABLE_HTTPS", False)
     env_ssl_certfile = os.getenv(f"{ENV_PREFIX}SSL_CERTFILE")
     env_ssl_keyfile = os.getenv(f"{ENV_PREFIX}SSL_KEYFILE")
     role_hint = os.getenv("ROLE")
