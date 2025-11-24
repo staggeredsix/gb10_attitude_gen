@@ -12,19 +12,11 @@ import numpy as np
 from .camera import Camera
 from .config import AppConfig, load_config, parse_args
 from .emotion_classifier import EmotionClassifier
-from .face_segmentation import FaceSegmenter, SegmentationResult
 from .image_generator import ImageGenerator
 from .prompt_builder import build_prompt
-from .ui import draw_face_overlays, overlay_no_face, show_window
+from .ui import annotate_emotion, show_window
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _extract_face(frame: cv2.typing.MatLike, segmentation: SegmentationResult) -> Optional[np.ndarray]:
-    face_crop = segmentation.crop_face(frame)
-    if face_crop is None or face_crop.size == 0:
-        return None
-    return face_crop
 
 
 def run(config: AppConfig) -> None:
@@ -34,9 +26,6 @@ def run(config: AppConfig) -> None:
 
     try:
         classifier = EmotionClassifier(config.emotion_model, config.device)
-        segmenter = FaceSegmenter(
-            config.face_segmentation_model, config.device, min_face_ratio=config.segmentation_min_area
-        )
         diffusion_device = config.diffusion_device or config.device
         generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, diffusion_device
@@ -58,17 +47,9 @@ def run(config: AppConfig) -> None:
                     time.sleep(0.05)
                     continue
 
-                segmentation = segmenter.segment(frame)
-                emotion: Optional[str] = None
-                face: Optional[np.ndarray] = None
-
-                if segmentation:
-                    face = _extract_face(frame, segmentation)
-                    if face is not None:
-                        emotion = classifier.classify(face)
-                    frame = draw_face_overlays(frame, segmentation, emotion)
-                else:
-                    frame = overlay_no_face(frame)
+                resized_frame = generator.resize_to_output(frame)
+                emotion: Optional[str] = classifier.classify(resized_frame)
+                frame = annotate_emotion(frame, emotion)
 
                 now = time.time()
                 should_generate = (
@@ -78,7 +59,9 @@ def run(config: AppConfig) -> None:
 
                 if should_generate:
                     prompt = build_prompt(emotion)
-                    generated = generator.generate(prompt, face, previous_output=generated_img)
+                    generated = generator.generate(
+                        prompt, resized_frame, previous_output=generated_img
+                    )
                     if generated is not None:
                         generated_img = generated
                         last_emotion = emotion

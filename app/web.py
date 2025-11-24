@@ -19,7 +19,6 @@ from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
 from .emotion_classifier import EmotionClassifier
-from .face_segmentation import FaceSegmenter
 from .image_generator import ImageGenerator
 from .prompt_builder import STYLE_MAP, build_prompt
 
@@ -43,11 +42,6 @@ class InferencePipeline:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.segmenter = FaceSegmenter(
-            config.face_segmentation_model,
-            config.device,
-            min_face_ratio=config.segmentation_min_area,
-        )
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
@@ -65,19 +59,11 @@ class InferencePipeline:
     ) -> tuple[Optional[str], Optional[np.ndarray], bool, Optional[float]]:
         """Process a frame and update session state as needed."""
 
-        segmentation = self.segmenter.segment(frame)
-        emotion: Optional[str] = None
-        face: Optional[np.ndarray] = None
+        resized = self.generator.resize_to_output(frame)
+        emotion: Optional[str] = self.classifier.classify(resized)
         gen_latency_ms: Optional[float] = None
 
         state.mode = mode if mode in {"single", "dual"} else state.mode
-
-        if segmentation:
-            face = segmentation.crop_face(frame)
-            if face is not None:
-                emotion = self.classifier.classify(face)
-        else:
-            LOGGER.debug("No face segmented in incoming frame")
 
         now = time.time()
         should_generate = (
@@ -91,7 +77,7 @@ class InferencePipeline:
         if should_generate:
             prompt = build_prompt(emotion, style_key)
             gen_start = time.time()
-            generated = self.generator.generate(prompt, face)
+            generated = self.generator.generate(prompt, resized)
             if generated is not None:
                 state.generated_img = generated
                 state.last_emotion = emotion
@@ -425,7 +411,7 @@ def _build_html(default_mode: str) -> str:
     <body>
         <header>
             <h1>AI Mood Mirror</h1>
-            <p class="subhead">Stream your webcam or upload a portrait. We crop the face, infer the mood, and send it to the diffusion model to generate a live portrait.</p>
+            <p class="subhead">Stream your webcam or upload a portrait. We infer the mood from the full frame and send it to the diffusion model to generate a live portrait.</p>
         </header>
 
         <main>
@@ -609,14 +595,14 @@ def _build_html(default_mode: str) -> str:
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
                     if (payload.status === 'models_ready') {
-                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}. Face segmentation: ${payload.face_segmentation_model}.`);
+                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}.`);
                         return;
                     }
 
                     if (payload.emotion) {
                         setStatus(`Emotion: ${payload.emotion}`);
                     } else {
-                        setStatus('No face segmented');
+                        setStatus('Awaiting emotion signal');
                     }
                     if (payload.mode) {
                         inferenceMode = payload.mode;
@@ -712,7 +698,6 @@ def create_app(config: AppConfig) -> FastAPI:
                 "status": "models_ready",
                 "emotion_model": config.emotion_model,
                 "diffusion_model": config.diffusion_model,
-                "face_segmentation_model": config.face_segmentation_model,
                 "device": config.device,
             }
         )

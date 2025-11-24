@@ -61,6 +61,8 @@ class ImageGenerator:
         self.conditioning_scale = 0.85
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
+        self.output_size = self._determine_output_size()
+
         controlnet_config = self.bundle.pipeline.controlnet.config
         is_union_model = bool(getattr(controlnet_config, "union", False)) or "union" in controlnet_name.lower()
         self.control_mode = 0 if is_union_model else None
@@ -206,6 +208,31 @@ class ImageGenerator:
         self.device = torch.device("cpu")
         self.bundle.dtype = torch.float32
         self.bundle.pipeline.to(device=self.device, dtype=self.bundle.dtype)
+
+    def _determine_output_size(self) -> tuple[int, int]:
+        """Infer the pipeline's output resolution for control image resizing."""
+
+        processor = getattr(self.bundle.pipeline, "image_processor", None)
+        size = getattr(processor, "size", None)
+        if isinstance(size, dict):
+            width = size.get("width") or size.get("shortest_edge")
+            height = size.get("height") or size.get("shortest_edge")
+            if width and height:
+                return int(width), int(height)
+
+        transformer = getattr(self.bundle.pipeline, "transformer", None)
+        sample_size = getattr(getattr(transformer, "config", None), "sample_size", None)
+        if sample_size:
+            return int(sample_size), int(sample_size)
+
+        LOGGER.warning("Unable to determine pipeline output size; defaulting to 1024x1024")
+        return 1024, 1024
+
+    def resize_to_output(self, frame: np.ndarray) -> np.ndarray:
+        """Resize an input frame to match the diffusion output resolution."""
+
+        width, height = self.output_size
+        return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
     @staticmethod
     def _prepare_control_image(init_image: np.ndarray) -> Image.Image:
