@@ -47,7 +47,7 @@ Useful flags:
 
 - `--camera-index`: Webcam index (default `0`, used only by the legacy OpenCV mode).
 - `--emotion-model`: Hugging Face model id for emotion detection.
-- `--diffusion-model`: Diffusion model id (default `black-forest-labs/FLUX.1-schnell`).
+- `--diffusion-model`: Diffusion model id (default `black-forest-labs/FLUX.1-Turbo`).
 - `--controlnet-model`: ControlNet id to condition on the webcam frame (default `InstantX/FLUX.1-dev-Controlnet-Union`).
 - `--face-segmentation-model`: Hugging Face model id for face segmentation.
 - `--segmentation-min-area`: Minimum area ratio for a valid face mask (default `0.01`).
@@ -118,6 +118,7 @@ docker run --rm -it \
 ## Notes
 
 - GPU acceleration is required for both the VLM-based emotion rater and the FLUX ControlNet pipeline; startup will fail if no CUDA or MPS device is detected.
+- The default FLUX.1-Turbo diffusion model is optimized for newer B-series GPUs (e.g., NVIDIA B300) while remaining compatible with existing CUDA setups.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
 - Models must exist under `./models` (populated via `./scripts/download_models.sh`) and are mounted into the container at `/models`; the entrypoint will exit with a clear error if they are missing.

@@ -31,6 +31,10 @@ class ImageGenerator:
             LOGGER.warning("CUDA requested but not available; falling back to CPU for diffusion")
             resolved = torch.device("cpu")
 
+        if resolved.type == "cuda" and not self._is_cuda_usable(resolved):
+            LOGGER.warning("CUDA device not usable for diffusion; falling back to CPU")
+            resolved = torch.device("cpu")
+
         if resolved.type == "mps" and not torch.backends.mps.is_available():
             LOGGER.warning("MPS requested but not available; falling back to CPU for diffusion")
             resolved = torch.device("cpu")
@@ -93,6 +97,24 @@ class ImageGenerator:
         return _PipelineBundle(pipeline=pipe, dtype=dtype)
 
     @staticmethod
+    def _is_cuda_usable(device: torch.device) -> bool:
+        try:
+            torch.empty(1, device=device).mul_(1)
+            return True
+        except RuntimeError as err:
+            message = str(err).lower()
+            if "no kernel image is available" in message or "cuda error" in message:
+                LOGGER.debug("CUDA usability check failed: %s", err)
+                return False
+            raise
+
+    def _move_to_cpu(self) -> None:
+        LOGGER.warning("Retrying diffusion on CPU after GPU failure")
+        self.device = torch.device("cpu")
+        self.bundle.dtype = torch.float32
+        self.bundle.pipeline.to(device=self.device, dtype=self.bundle.dtype)
+
+    @staticmethod
     def _prepare_control_image(init_image: np.ndarray) -> Image.Image:
         blurred = cv2.GaussianBlur(init_image, (5, 5), 0)
         edges = cv2.Canny(blurred, 100, 200)
@@ -109,6 +131,40 @@ class ImageGenerator:
         blend_ratio = 0.35  # prioritize prior frame to maintain visual continuity
         return cv2.addWeighted(new_image, blend_ratio, previous_image, 1 - blend_ratio, 0)
 
+    def _should_fallback_to_cpu(self, exc: Exception) -> bool:
+        if self.device.type == "cpu":
+            return False
+        message = str(exc).lower()
+        return "no kernel image is available" in message or "cuda error" in message
+
+    def _generate_once(
+        self, prompt: str, init_image: np.ndarray, previous_output: np.ndarray | None = None
+    ) -> np.ndarray:
+        autocast_ctx = (
+            torch.autocast(device_type=self.device.type, dtype=self.bundle.dtype)
+            if self.device.type == "cuda"
+            else nullcontext()
+        )
+        with torch.inference_mode(), autocast_ctx:
+            control_pil = self._prepare_control_image(init_image)
+            result = self.bundle.pipeline(
+                prompt=prompt,
+                control_image=control_pil,
+                control_mode=self.control_mode,
+                num_inference_steps=self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                controlnet_conditioning_scale=self.conditioning_scale,
+                output_type="np",
+            )
+            image = result.images[0]
+
+        if not np.isfinite(image).all():
+            LOGGER.warning("Generated image contained non-finite values; sanitizing output")
+            image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
+
+        image_uint8 = np.clip(image * 255, 0, 255).astype(np.uint8)
+        return self._blend_frames(cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR), previous_output)
+
     def generate(
         self, prompt: str, init_image: np.ndarray | None, previous_output: np.ndarray | None = None
     ) -> Optional[np.ndarray]:
@@ -120,31 +176,19 @@ class ImageGenerator:
 
         LOGGER.info("Generating image for prompt: %s", prompt)
         try:
-            autocast_ctx = (
-                torch.autocast(device_type=self.device.type, dtype=self.bundle.dtype)
-                if self.device.type == "cuda"
-                else nullcontext()
-            )
-            with torch.inference_mode(), autocast_ctx:
-                control_pil = self._prepare_control_image(init_image)
-                result = self.bundle.pipeline(
-                    prompt=prompt,
-                    control_image=control_pil,
-                    control_mode=self.control_mode,
-                    num_inference_steps=self.num_inference_steps,
-                    guidance_scale=self.guidance_scale,
-                    controlnet_conditioning_scale=self.conditioning_scale,
-                    output_type="np",
-                )
-                image = result.images[0]
-
-            if not np.isfinite(image).all():
-                LOGGER.warning("Generated image contained non-finite values; sanitizing output")
-                image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
-
-            image_uint8 = np.clip(image * 255, 0, 255).astype(np.uint8)
-            blended = self._blend_frames(cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR), previous_output)
-            return blended
+            return self._generate_once(prompt, init_image, previous_output)
+        except RuntimeError as exc:
+            if self._should_fallback_to_cpu(exc):
+                self._move_to_cpu()
+                try:
+                    return self._generate_once(prompt, init_image, previous_output)
+                except Exception as retry_exc:  # noqa: BLE001
+                    LOGGER.exception(
+                        "Image generation failed after CPU fallback: %s", retry_exc
+                    )
+                    return None
+            LOGGER.exception("Image generation failed: %s", exc)
+            return None
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Image generation failed: %s", exc)
             return None
