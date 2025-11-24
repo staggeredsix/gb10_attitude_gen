@@ -33,9 +33,9 @@ class SegmentationResult:
         box_w = x2 - x1
         box_h = y2 - y1
 
-        # Expand the crop by 100% in both dimensions to capture full headgear
-        expand_x = box_w // 2
-        expand_y = box_h // 2
+        # Expand the crop by 300% in both dimensions to capture more of the user's body
+        expand_x = box_w
+        expand_y = box_h
         x1 = max(0, x1 - expand_x)
         y1 = max(0, y1 - expand_y)
         x2 = min(width, x2 + expand_x)

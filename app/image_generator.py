@@ -9,6 +9,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
+import sdnq  # noqa: F401  # Registers SDNQ quantization with diffusers and transformers
 from diffusers import FluxControlNetModel, FluxControlNetPipeline, FluxTransformer2DModel
 from diffusers.quantizers.auto import DiffusersAutoQuantizer
 from PIL import Image
@@ -55,8 +56,8 @@ class ImageGenerator:
             dtype = torch.float32
         else:
             dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float16
-        self.num_inference_steps = 4
-        self.guidance_scale = 3.0
+        self.num_inference_steps = 2
+        self.guidance_scale = 0.0
         self.conditioning_scale = 0.85
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
@@ -108,11 +109,14 @@ class ImageGenerator:
                 pipe.enable_xformers_memory_efficient_attention()
             except Exception:  # noqa: BLE001
                 LOGGER.debug("xFormers attention could not be enabled", exc_info=True)
-            pipe.enable_attention_slicing()
-            if hasattr(pipe, "enable_vae_slicing"):
-                pipe.enable_vae_slicing()
+            if self.device.type == "cpu":
+                pipe.enable_attention_slicing()
+                if hasattr(pipe, "enable_vae_slicing"):
+                    pipe.enable_vae_slicing()
+                else:
+                    LOGGER.debug("Pipeline does not support VAE slicing; skipping enable_vae_slicing")
             else:
-                LOGGER.debug("Pipeline does not support VAE slicing; skipping enable_vae_slicing")
+                LOGGER.debug("Skipping attention/vae slicing to maximize GPU throughput")
             pipe.set_progress_bar_config(disable=True)
             if torch.backends.cudnn.is_available():
                 torch.backends.cudnn.benchmark = True

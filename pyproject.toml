@@ -17,6 +17,7 @@ dependencies = [
     "accelerate",
     "transformers",
     "diffusers",
+    "sdnq @ git+https://github.com/Disty0/sdnq",
     "numpy",
     "fastapi",
     "uvicorn[standard]",
