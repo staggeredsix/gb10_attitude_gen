@@ -49,7 +49,8 @@ class ImageGenerator:
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
 
         controlnet_config = self.bundle.pipeline.controlnet.config
-        self.control_mode = 0 if getattr(controlnet_config, "union", False) else None
+        is_union_model = bool(getattr(controlnet_config, "union", False)) or "union" in controlnet_name.lower()
+        self.control_mode = 0 if is_union_model else None
         if self.control_mode is not None:
             LOGGER.info("ControlNet-Union detected; defaulting control_mode to canny (0)")
 
