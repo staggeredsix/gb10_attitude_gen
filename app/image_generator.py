@@ -48,18 +48,11 @@ class ImageGenerator:
             raise RuntimeError("Unsupported device for diffusion")
 
         self.device = resolved
-        if self.device.type == "cuda" and not torch.cuda.is_bf16_supported():
-            LOGGER.info("BF16 not supported on this CUDA device; using float16 for diffusion")
-            dtype = torch.float16
-        elif self.device.type == "cpu":
-            LOGGER.warning("Running diffusion pipeline on CPU; performance will be significantly degraded")
-            dtype = torch.float32
-        else:
-            dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float16
+        dtypes = self._preferred_dtypes()
         self.num_inference_steps = 2
         self.guidance_scale = 0.0
         self.conditioning_scale = 0.85
-        self.bundle = self._load_pipeline(model_name, controlnet_name, dtype)
+        self.bundle = self._load_pipeline(model_name, controlnet_name, dtypes)
 
         self.output_size = self._determine_output_size()
 
@@ -69,23 +62,57 @@ class ImageGenerator:
         if self.control_mode is not None:
             LOGGER.info("ControlNet-Union detected; defaulting control_mode to canny (0)")
 
-    def _load_pipeline(self, model_name: str, controlnet_name: str, dtype: torch.dtype) -> _PipelineBundle:
+    def _preferred_dtypes(self) -> list[torch.dtype]:
+        """Return a list of preferred dtypes from fastest to safest for the device."""
+
+        if self.device.type == "cpu":
+            LOGGER.warning(
+                "Running diffusion pipeline on CPU; performance will be significantly degraded"
+            )
+            return [torch.float32]
+
+        dtypes: list[torch.dtype] = []
+        if self.device.type == "cuda":
+            # Prefer the most aggressive precision available for throughput; fall back gracefully.
+            if hasattr(torch.cuda, "is_fp8_available") and torch.cuda.is_fp8_available():
+                dtypes.append(torch.float8_e4m3fn)
+            dtypes.append(torch.float16)
+            if torch.cuda.is_bf16_supported():
+                dtypes.append(torch.bfloat16)
+            return dtypes
+
+        # MPS generally prefers float16 for performance.
+        if self.device.type == "mps":
+            dtypes.append(torch.float16)
+        return dtypes or [torch.float16]
+
+    def _load_pipeline(
+        self, model_name: str, controlnet_name: str, dtypes: list[torch.dtype]
+    ) -> _PipelineBundle:
         LOGGER.info("Loading ControlNet model: %s", controlnet_name)
-        controlnet = FluxControlNetModel.from_pretrained(
-            controlnet_name,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-            # Community checkpoints may have mismatched shapes; allow loading with
-            # random initialization for incompatible tensors to keep the app running.
-            ignore_mismatched_sizes=True,
-        )
 
         try:
             import bitsandbytes as bnb  # noqa: F401
         except ImportError:  # pragma: no cover - runtime dependency check
             LOGGER.warning("bitsandbytes is not installed; quantized FLUX models may fail to load")
 
-        def _build_pipeline(target_model: str) -> _PipelineBundle:
+        controlnet: FluxControlNetModel | None = None
+
+        def _load_controlnet(dtype: torch.dtype) -> FluxControlNetModel:
+            LOGGER.info("Loading ControlNet weights with dtype=%s", dtype)
+            return FluxControlNetModel.from_pretrained(
+                controlnet_name,
+                torch_dtype=dtype,
+                trust_remote_code=True,
+                # Community checkpoints may have mismatched shapes; allow loading with
+                # random initialization for incompatible tensors to keep the app running.
+                ignore_mismatched_sizes=True,
+            )
+
+        def _build_pipeline(target_model: str, dtype: torch.dtype) -> _PipelineBundle:
+            nonlocal controlnet
+            if controlnet is None or controlnet.dtype != dtype:
+                controlnet = _load_controlnet(dtype)
             LOGGER.info("Loading FLUX transformer weights from %s", target_model)
             transformer = FluxTransformer2DModel.from_pretrained(
                 target_model,
@@ -131,23 +158,37 @@ class ImageGenerator:
 
             return _PipelineBundle(pipeline=pipe, dtype=dtype)
 
-        try:
-            return _build_pipeline(model_name)
-        except RuntimeError as err:
-            message = str(err).lower()
-            fallback_model = "black-forest-labs/FLUX.1-schnell"
-            should_retry = (
-                ("size mismatch" in message or "mismatched" in message)
-                and model_name != fallback_model
-            )
-            if should_retry:
-                LOGGER.warning(
-                    "Failed to load diffusion model '%s' due to incompatible weights; retrying with fallback '%s'",
-                    model_name,
-                    fallback_model,
+        last_err: Exception | None = None
+        for dtype in dtypes:
+            try:
+                return _build_pipeline(model_name, dtype)
+            except RuntimeError as err:
+                last_err = err
+                message = str(err).lower()
+                fallback_model = "black-forest-labs/FLUX.1-schnell"
+                should_retry = (
+                    ("size mismatch" in message or "mismatched" in message)
+                    and model_name != fallback_model
                 )
-                return _build_pipeline(fallback_model)
-            raise
+                if should_retry:
+                    LOGGER.warning(
+                        "Failed to load diffusion model '%s' due to incompatible weights; retrying with fallback '%s'",
+                        model_name,
+                        fallback_model,
+                    )
+                    try:
+                        return _build_pipeline(fallback_model, dtype)
+                    except Exception as retry_err:  # noqa: BLE001
+                        last_err = retry_err
+                        LOGGER.debug("Fallback model load failed with dtype %s", dtype, exc_info=True)
+                LOGGER.warning(
+                    "Pipeline load failed with dtype %s; trying next precision option if available",
+                    dtype,
+                )
+
+        if last_err:
+            raise last_err
+        raise RuntimeError("Unable to initialize diffusion pipeline")
 
     def _install_quantization_guard(self) -> None:
         original_merge = DiffusersAutoQuantizer.merge_quantization_configs
@@ -235,9 +276,18 @@ class ImageGenerator:
         return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
     @staticmethod
-    def _prepare_control_image(init_image: np.ndarray) -> Image.Image:
+    def _prepare_control_image(
+        init_image: np.ndarray, previous_output: np.ndarray | None
+    ) -> Image.Image:
         blurred = cv2.GaussianBlur(init_image, (5, 5), 0)
         edges = cv2.Canny(blurred, 100, 200)
+
+        if previous_output is not None:
+            prev_resized = cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0]))
+            prev_blurred = cv2.GaussianBlur(prev_resized, (5, 5), 0)
+            prev_edges = cv2.Canny(prev_blurred, 75, 175)
+            edges = cv2.addWeighted(edges, 0.6, prev_edges, 0.4, 0)
+
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
         return Image.fromarray(control)
 
@@ -248,7 +298,7 @@ class ImageGenerator:
         if previous_image.shape != new_image.shape:
             previous_image = cv2.resize(previous_image, (new_image.shape[1], new_image.shape[0]))
 
-        blend_ratio = 0.35  # prioritize prior frame to maintain visual continuity
+        blend_ratio = 0.25  # prioritize prior frame to maintain visual continuity
         return cv2.addWeighted(new_image, blend_ratio, previous_image, 1 - blend_ratio, 0)
 
     def _should_fallback_to_cpu(self, exc: Exception) -> bool:
@@ -266,8 +316,8 @@ class ImageGenerator:
             else nullcontext()
         )
         with torch.inference_mode(), autocast_ctx:
-            control_pil = self._prepare_control_image(init_image)
-            result = self.bundle.pipeline(
+            control_pil = self._prepare_control_image(init_image, previous_output)
+            pipeline_kwargs = dict(
                 prompt=prompt,
                 control_image=control_pil,
                 control_mode=self.control_mode,
@@ -276,6 +326,28 @@ class ImageGenerator:
                 controlnet_conditioning_scale=self.conditioning_scale,
                 output_type="np",
             )
+
+            if previous_output is not None:
+                blended_condition = cv2.addWeighted(
+                    init_image, 0.55, cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0])), 0.45, 0
+                )
+                pipeline_kwargs["image"] = Image.fromarray(
+                    cv2.cvtColor(blended_condition.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                )
+                pipeline_kwargs["strength"] = 0.35
+
+            try:
+                result = self.bundle.pipeline(**pipeline_kwargs)
+            except TypeError as exc:
+                if "image" in pipeline_kwargs and "unexpected keyword argument 'image'" in str(exc):
+                    LOGGER.warning(
+                        "Init image conditioning not supported by current pipeline; retrying without init image"
+                    )
+                    pipeline_kwargs.pop("image", None)
+                    pipeline_kwargs.pop("strength", None)
+                    result = self.bundle.pipeline(**pipeline_kwargs)
+                else:
+                    raise
             image = result.images[0]
 
         if not np.isfinite(image).all():
