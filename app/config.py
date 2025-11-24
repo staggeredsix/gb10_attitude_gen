@@ -49,8 +49,8 @@ class AppConfig:
         the caller must handle the RuntimeError and exit gracefully.
         """
         if not self.use_cuda:
-            LOGGER.error("GPU execution is required; CUDA cannot be disabled")
-            raise RuntimeError("GPU execution is required")
+            LOGGER.warning("CUDA usage disabled via configuration; using CPU")
+            return "cpu"
 
         if torch.cuda.is_available():
             name = torch.cuda.get_device_name(0)
