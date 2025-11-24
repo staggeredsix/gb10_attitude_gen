@@ -83,6 +83,10 @@ class ImageGenerator:
             subfolder="transformer",
             torch_dtype=dtype,
             trust_remote_code=True,
+            # Some FLUX community weights ship mismatched shapes; allow loading with
+            # random init for incompatible tensors to keep the app running.
+            low_cpu_mem_usage=False,
+            ignore_mismatched_sizes=True,
         )
 
         LOGGER.info("Loading diffusion pipeline: %s on %s", model_name, self.device)
