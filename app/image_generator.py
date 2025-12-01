@@ -109,10 +109,19 @@ class ImageGenerator:
                 ignore_mismatched_sizes=True,
             )
 
+        def _is_gguf_model(name: str) -> bool:
+            lowered = name.lower()
+            return lowered.endswith(".gguf") or "gguf" in lowered
+
         def _build_pipeline(target_model: str, dtype: torch.dtype) -> _PipelineBundle:
             nonlocal controlnet
             if controlnet is None or controlnet.dtype != dtype:
                 controlnet = _load_controlnet(dtype)
+
+            if _is_gguf_model(target_model):
+                raise ValueError(
+                    "GGUF checkpoints are not compatible with the diffusers FLUX ControlNet pipeline"
+                )
             LOGGER.info("Loading FLUX transformer weights from %s", target_model)
             transformer = FluxTransformer2DModel.from_pretrained(
                 target_model,
@@ -162,17 +171,17 @@ class ImageGenerator:
         for dtype in dtypes:
             try:
                 return _build_pipeline(model_name, dtype)
-            except RuntimeError as err:
+            except (RuntimeError, ValueError) as err:
                 last_err = err
                 message = str(err).lower()
                 fallback_model = "black-forest-labs/FLUX.1-schnell"
                 should_retry = (
-                    ("size mismatch" in message or "mismatched" in message)
+                    ("size mismatch" in message or "mismatched" in message or "gguf" in message)
                     and model_name != fallback_model
                 )
                 if should_retry:
                     LOGGER.warning(
-                        "Failed to load diffusion model '%s' due to incompatible weights; retrying with fallback '%s'",
+                        "Failed to load diffusion model '%s' due to incompatible or unsupported weights; retrying with fallback '%s'",
                         model_name,
                         fallback_model,
                     )
