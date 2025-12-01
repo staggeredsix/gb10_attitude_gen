@@ -2,53 +2,125 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-STYLE_MAP: Dict[str, str] = {
-    "happy": "radiant stained-glass glow, prismatic haloed skyline, floating lanterns",
-    "angry": "crimson cyberpunk city lights, jagged chrome sculptures, kinetic shadows",
-    "sad": "misty midnight alley with watercolor reflections, moonlit glass shards",
-    "surprise": "bursting confetti nebulae, crystalline shards in mid-air, dynamic rim light",
-    "fear": "haunted neon forest, bioluminescent fog, fractured silhouettes",
-    "disgust": "acidic graffiti tunnels, warped mirrors, glitch textures",
-    "neutral": "dreamy art gallery interior, soft volumetric light, floating gauze curtains",
-    "cinematic": "cinematic dramatic portrait with volumetric lighting and film grain",
-    "whimsical": "storybook fresco walls, pastel sparks, floating ink wisps",
-    "neon": "vibrant neon vaporwave edges with soft colorful glow",
-    "surreal": "surreal collage fragments with gentle motion blur",
-    "sketch": "illustrative line art with painterly gradients",
+STYLE_MAP: Dict[str, List[str]] = {
+    "happy": [
+        "sunlit oil pastel glow, honey-gold rim light, swirling coral and rose backdrop",
+        "radiant spring studio light, citrus and blush palette, soft bloom on the cheeks",
+        "warm morning skylight, peach haze, impressionist dashes of pink and apricot",
+    ],
+    "angry": [
+        "deep carmine and indigo storm light, molten copper edges, sharp chiaroscuro shadows",
+        "embers and iron lighting, scarlet reflections on glossy paint strokes",
+        "rusted industrial glow, crimson neon flares, gritty chiaroscuro",
+    ],
+    "sad": [
+        "ink-washed twilight corridor, muted teal and violet haze, gentle rain reflections",
+        "overcast dusk window light, desaturated blues, quiet watercolor drips",
+        "foggy alleyway sheen, pewter and lilac patina, soft backlit silhouette",
+    ],
+    "surprise": [
+        "electric amethyst flare, prismatic sparks, kinetic brush strokes frozen in air",
+        "staccato neon streaks, cyan and violet bursts, suspended droplets of paint",
+        "crystal refractions, scattered color prisms, sudden flares of magenta light",
+    ],
+    "fear": [
+        "nocturnal forest silhouettes, cyan bioluminescent mist, fractured moonbeams",
+        "ashen moonlit fog, cobalt backlight, tangled branches and distant embers",
+        "cold underlit portrait, teal glints, fractured glass reflections on the skin",
+    ],
+    "disgust": [
+        "acid-green neon graffiti, warped chrome reflections, grimy cinematic smoke",
+        "murky subway sodium light, toxic slime reflections, smeared oil paint",
+        "chartreuse and rust glow, rough metal textures, glitchy urban grime",
+    ],
+    "neutral": [
+        "soft museum gallery ambience, dove-gray silk drapery, balanced studio glow",
+        "even skylight diffusion, porcelain gradients, uncluttered background",
+        "calm archival studio, linen backdrop, subtle tonal falloff",
+    ],
+    "cinematic": [
+        "dramatic portrait stage with volumetric key light, fine grain, razor focus on the eyes",
+        "arthouse portrait lighting, sweeping shadows, subtle film grain and bloom",
+        "silver screen glow, balanced contrast, polished editorial sheen",
+    ],
+    "whimsical": [
+        "storybook fresco walls, pastel embers, floating ink wisps and chalk constellations",
+        "candy-lacquered fresco, dreamy firefly lights, watercolor nebula haze",
+        "hand-painted mural ambience, soft pastel fog, dancing chalk sparkles",
+    ],
+    "neon": [
+        "vibrant vaporwave bloom, magenta and cyan ribbons, luminous rim edges",
+        "electric dusk arcade, neon ribbons, chromatic aberration shimmer",
+        "holographic studio glow, ultraviolet haze, glowing edge outlines",
+    ],
+    "surreal": [
+        "collage of painted nebulae and cracked marble, slow-motion pigment trails",
+        "impossible cathedral of color, melting fresco arches, shimmering dust",
+        "floating staircases of paint, cosmic plaster textures, dreamlike gradients",
+    ],
+    "sketch": [
+        "charcoal and colored pencil crosshatching, subtle watercolor fill, expressive strokes",
+        "graphite sketchbook shading, paper texture, loose hatching and pastel washes",
+        "ink linework with soft gouache fill, gestural strokes, tactile paper grain",
+    ],
 }
 
 WHIMSICAL_SPINS = [
-    "dreamlike doodles and playful symbols floating around",
-    "whimsical storybook brush strokes and pastel sparks",
-    "ethereal glow with floating origami creatures",
-    "surreal collage fragments with gentle motion blur",
-    "soft bokeh fireflies and iridescent mist",
+    "aurora-swept night sky curling behind the subject",
+    "cosmic oil paint swirls orbiting the silhouette",
+    "hand-tinted etching with glowing dust motes and tiny stars",
+    "velvet darkness split by rivers of molten color",
+    "quiet storm of soft light leaks and drifting pigments",
 ]
 
 ARTISANAL_DETAILS = [
-    "handcrafted texture, artisan pigment, delicate etching",
-    "illustrative line art with painterly gradients",
-    "fine art studio lighting with cinematic rim light",
-    "mixed media look with ink wash and neon pencil marks",
-    "high-detail portrait lens with shimmering highlights",
+    "impasto texture, expressive brushwork, visible pigment ridges",
+    "gallery-grade studio lighting with cinematic rim glow",
+    "medium format portrait lens feel, sharp eyes and creamy falloff",
+    "mixed media layering of oil, pastel, and charcoal, nuanced gradients",
+    "painterly grain with subtle bloom and analog richness",
+]
+
+SUBJECT_FOCUS = [
+    "intimate head-and-shoulders framing, direct gaze, vivid facial texture, strong cheekbone light",
+    "half-length portrait with open posture, confident gaze, crisp focus on the eyes",
+    "close portrait crop, soft jawline light, delicate catchlights, expressive eyebrows",
+]
+
+TEXTURE_GARNISH = [
+    "velvet bokeh, translucent veils of color, painterly microcontrast",
+    "floating paper scraps, glittering dust motes, luminous mist",
+    "subtle film halation, glassy reflections, layered mixed media glaze",
 ]
 
 
 def _random_tail() -> str:
     whimsical = random.choice(WHIMSICAL_SPINS)
     detail = random.choice(ARTISANAL_DETAILS)
-    return f"{whimsical}, {detail}"
+    texture = random.choice(TEXTURE_GARNISH)
+    return f"{whimsical}, {detail}, {texture}"
+
+
+def _random_focus() -> str:
+    return random.choice(SUBJECT_FOCUS)
+
+
+def _resolve_style(style_key: str) -> str:
+    styles = STYLE_MAP.get(style_key)
+    if not styles:
+        styles = STYLE_MAP["neutral"]
+    return random.choice(styles)
 
 
 def build_whimsical_prompt(style_key: Optional[str] = None) -> str:
     """Return a playful, background-forward prompt for the diffusion pipeline."""
 
-    style = STYLE_MAP.get(style_key or "whimsical", STYLE_MAP["whimsical"])
+    style = _resolve_style(style_key or "whimsical")
     return (
-        "a lively artistic portrait of the person, "
-        f"{style}, {_random_tail()}, immersive painterly background, luminous atmosphere"
+        "an emotive painterly portrait of the person, "
+        f"{_random_focus()}, {style}, {_random_tail()}, immersive painterly background, luminous atmosphere"
     )
 
 
@@ -64,8 +136,8 @@ class MoodStyleController:
         self._tail = _random_tail()
 
     def _blend_styles(self, style_key: str, target_key: str, weight: float) -> str:
-        source_style = STYLE_MAP.get(style_key, STYLE_MAP["neutral"])
-        target_style = STYLE_MAP.get(target_key, STYLE_MAP["neutral"])
+        source_style = _resolve_style(style_key)
+        target_style = _resolve_style(target_key)
         weight_pct = int(weight * 100)
         return (
             f"background is {100 - weight_pct}% {self._source_emotion} ({source_style}) and "
@@ -104,8 +176,8 @@ class MoodStyleController:
         blended_style = self._blend_styles(blend_style_key, target_style_key, progress)
 
         return (
-            "a surreal artistic portrait of the person, "
-            f"mood drifting toward {self._target_emotion}, {blended_style}, "
+            "a surreal, highly detailed portrait of the person, "
+            f"{_random_focus()}, mood drifting toward {self._target_emotion}, {blended_style}, "
             f"{self._tail}, grand immersive background installation, cinematic glow"
         )
 
@@ -113,10 +185,10 @@ class MoodStyleController:
 def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
     """Return a flux diffusion prompt given an emotion and style template."""
 
-    style = STYLE_MAP.get(style_key or emotion, STYLE_MAP.get("cinematic", "cinematic dramatic portrait"))
+    style = _resolve_style(style_key or emotion)
     return (
-        "a surreal artistic portrait of the person with "
-        f"{emotion} mood, {style}, {_random_tail()}, dramatic art installation background, professional lighting"
+        "a vivid, textured portrait of the person with "
+        f"{emotion} mood, {_random_focus()}, {style}, {_random_tail()}, dramatic art installation background, professional lighting"
     )
 
 
