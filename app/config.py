@@ -27,7 +27,7 @@ class AppConfig:
 
     camera_index: int = 0
     emotion_model: str = "Qwen/Qwen2-VL-2B-Instruct"
-    diffusion_model: str = "Disty0/FLUX.1-schnell-SDNQ-uint4-svd-r32"
+    diffusion_model: str = "city96/FLUX.2-dev-gguf"
     controlnet_model: str = "InstantX/FLUX.1-dev-Controlnet-Union"
     face_segmentation_model: str = "briaai/RMBG-1.4"
     segmentation_min_area: float = 0.01
@@ -146,7 +146,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         args.diffusion_model
         if args.diffusion_model
         else env_diffusion_model
-        or "black-forest-labs/FLUX.1-schnell"
+        or "city96/FLUX.2-dev-gguf"
     )
     controlnet_model = args.controlnet_model if args.controlnet_model else env_controlnet_model or "InstantX/FLUX.1-dev-Controlnet-Union"
     face_seg_model = (

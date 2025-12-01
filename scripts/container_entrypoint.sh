@@ -16,7 +16,7 @@ from pathlib import Path
 
 REQUIRED = {
     "emotion": "Qwen/Qwen2-VL-2B-Instruct",
-    "diffusion": "Disty0/FLUX.1-schnell-SDNQ-uint4-svd-r32",
+    "diffusion": "city96/FLUX.2-dev-gguf",
     "controlnet": "InstantX/FLUX.1-dev-Controlnet-Union",
     "face-segmentation": "briaai/RMBG-1.4",
 }
