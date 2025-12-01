@@ -18,6 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
+from .generation_scheduler import AdaptiveGenerationScheduler
 from .image_generator import ImageGenerator
 from .prompt_builder import STYLE_MAP, build_whimsical_prompt
 
@@ -43,6 +44,9 @@ class InferencePipeline:
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
         )
+        self.scheduler = AdaptiveGenerationScheduler(
+            initial_interval=max(config.generation_interval, 0.1)
+        )
         LOGGER.info(
             "Models ready (diffusion='%s', controlnet='%s', device=%s)",
             config.diffusion_model,
@@ -55,6 +59,14 @@ class InferencePipeline:
     ) -> tuple[Optional[np.ndarray], bool, Optional[float]]:
         """Process a frame and update session state as needed."""
 
+        target_shape = frame.shape[:2]
+        if not self.scheduler.should_generate():
+            if state.generated_img is not None:
+                state.generated_img = self.generator.upscale_for_display(
+                    state.generated_img, target_shape
+                )
+            return state.generated_img, state.has_pending_image, state.last_latency_ms
+
         resized = self.generator.resize_to_output(frame)
         gen_latency_ms: Optional[float] = None
 
@@ -63,8 +75,10 @@ class InferencePipeline:
         prompt = build_whimsical_prompt(style_key)
         gen_start = time.time()
         generated = self.generator.generate(prompt, resized, previous_output=state.generated_img)
+        self.scheduler.record_latency(time.time() - gen_start)
         if generated is not None:
-            state.generated_img = generated
+            upscaled = self.generator.upscale_for_display(generated, target_shape)
+            state.generated_img = upscaled
             state.last_gen_time = gen_start
             state.has_pending_image = True
             gen_latency_ms = (time.time() - gen_start) * 1000

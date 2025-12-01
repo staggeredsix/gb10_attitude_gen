@@ -52,7 +52,7 @@ Useful flags:
 - `--controlnet-model`: ControlNet id to condition on the webcam frame (default `InstantX/FLUX.1-dev-Controlnet-Union`).
 - `--face-segmentation-model`: Hugging Face model id for face segmentation.
 - `--segmentation-min-area`: Minimum area ratio for a valid face mask (default `0.01`).
-- `--generation-interval`: Seconds between portrait generations (default `3.0`).
+- `--generation-interval`: Seconds between portrait generations (default `7.0`).
 - `--use-cuda` / `--no-cuda`: Force enable/disable CUDA (GPU is mandatory; disabling will raise an error).
 - `--no-ui`: Run headless without OpenCV windows.
 - `--host` / `--port`: Host/port for the web UI server (defaults `0.0.0.0:8000`).

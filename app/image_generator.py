@@ -284,6 +284,14 @@ class ImageGenerator:
         width, height = self.output_size
         return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
+    def upscale_for_display(self, image: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+        """Upscale or downscale an image to match a target (height, width)."""
+
+        target_height, target_width = target_shape
+        if image.shape[0] == target_height and image.shape[1] == target_width:
+            return image
+        return cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_CUBIC)
+
     @staticmethod
     def _prepare_control_image(
         init_image: np.ndarray, previous_output: np.ndarray | None
