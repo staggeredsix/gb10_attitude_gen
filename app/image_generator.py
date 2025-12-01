@@ -111,7 +111,7 @@ class ImageGenerator:
 
         def _is_gguf_model(name: str) -> bool:
             lowered = name.lower().rstrip("/")
-            return lowered.endswith(".gguf")
+            return "gguf" in lowered
 
         def _build_pipeline(target_model: str, dtype: torch.dtype) -> _PipelineBundle:
             nonlocal controlnet
