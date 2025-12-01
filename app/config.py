@@ -31,7 +31,7 @@ class AppConfig:
     controlnet_model: str = "InstantX/FLUX.1-dev-Controlnet-Union"
     face_segmentation_model: str = "briaai/RMBG-1.4"
     segmentation_min_area: float = 0.01
-    generation_interval: float = 3.0
+    generation_interval: float = 7.0
     diffusion_device: Optional[str] = None
     use_cuda: bool = True
     show_windows: bool = True
@@ -166,7 +166,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     generation_interval = (
         args.generation_interval
         if args.generation_interval is not None
-        else float(env_gen_interval) if env_gen_interval else 3.0
+        else float(env_gen_interval) if env_gen_interval else 7.0
     )
     diffusion_device = args.diffusion_device if args.diffusion_device else env_diffusion_device
 

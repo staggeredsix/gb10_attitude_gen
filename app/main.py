@@ -11,6 +11,7 @@ import numpy as np
 
 from .camera import Camera
 from .config import AppConfig, load_config, parse_args
+from .generation_scheduler import AdaptiveGenerationScheduler
 from .image_generator import ImageGenerator
 from .prompt_builder import build_whimsical_prompt
 from .ui import show_window
@@ -36,6 +37,9 @@ def run(config: AppConfig) -> None:
 
     try:
         with Camera(config.camera_index) as camera:
+            scheduler = AdaptiveGenerationScheduler(
+                initial_interval=max(config.generation_interval, 0.1)
+            )
             while True:
                 ret, frame = camera.read()
                 if not ret:
@@ -43,14 +47,22 @@ def run(config: AppConfig) -> None:
                     time.sleep(0.05)
                     continue
 
-                resized_frame = generator.resize_to_output(frame)
-
-                prompt = build_whimsical_prompt()
-                generated = generator.generate(
-                    prompt, resized_frame, previous_output=generated_img
-                )
-                if generated is not None:
-                    generated_img = generated
+                if scheduler.should_generate():
+                    resized_frame = generator.resize_to_output(frame)
+                    prompt = build_whimsical_prompt()
+                    gen_start = time.time()
+                    generated = generator.generate(
+                        prompt, resized_frame, previous_output=generated_img
+                    )
+                    scheduler.record_latency(time.time() - gen_start)
+                    if generated is not None:
+                        generated_img = generator.upscale_for_display(
+                            generated, frame.shape[:2]
+                        )
+                elif generated_img is not None:
+                    generated_img = generator.upscale_for_display(
+                        generated_img, frame.shape[:2]
+                    )
 
                 if config.show_windows:
                     show_window("Webcam", frame)
