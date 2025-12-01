@@ -18,9 +18,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from .config import AppConfig, load_config, parse_args
+from .emotion_classifier import EmotionClassifier
+from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .generation_scheduler import AdaptiveGenerationScheduler
 from .image_generator import ImageGenerator
-from .prompt_builder import STYLE_MAP, build_whimsical_prompt
+from .prompt_builder import STYLE_MAP, MoodStyleController
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,11 +31,16 @@ LOGGER = logging.getLogger(__name__)
 class SessionState:
     """Track generation state for a websocket client."""
 
+    last_emotion: Optional[str] = None
     last_gen_time: float = 0.0
     generated_img: Optional[np.ndarray] = None
     has_pending_image: bool = False
     mode: str = "single"
     last_latency_ms: Optional[float] = None
+    last_mask: Optional[np.ndarray] = None
+    style_controller: MoodStyleController = field(
+        default_factory=lambda: MoodStyleController(transition_seconds=10.0)
+    )
 
 
 class InferencePipeline:
@@ -41,14 +48,19 @@ class InferencePipeline:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self.classifier = EmotionClassifier(config.emotion_model, config.device)
         self.generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, config.device
+        )
+        self.segmenter = FaceSegmenter(
+            config.face_segmentation_model, config.device, config.segmentation_min_area
         )
         self.scheduler = AdaptiveGenerationScheduler(
             initial_interval=max(config.generation_interval, 0.1)
         )
         LOGGER.info(
-            "Models ready (diffusion='%s', controlnet='%s', device=%s)",
+            "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s)",
+            config.emotion_model,
             config.diffusion_model,
             config.controlnet_model,
             config.device,
@@ -56,7 +68,7 @@ class InferencePipeline:
 
     def process(
         self, frame: cv2.typing.MatLike, style_key: Optional[str], mode: str, state: SessionState
-    ) -> tuple[Optional[np.ndarray], bool, Optional[float]]:
+    ) -> tuple[Optional[str], Optional[np.ndarray], bool, Optional[float]]:
         """Process a frame and update session state as needed."""
 
         target_shape = frame.shape[:2]
@@ -65,16 +77,26 @@ class InferencePipeline:
                 state.generated_img = self.generator.upscale_for_display(
                     state.generated_img, target_shape
                 )
-            return state.generated_img, state.has_pending_image, state.last_latency_ms
+            return state.last_emotion, state.generated_img, state.has_pending_image, state.last_latency_ms
 
         resized = self.generator.resize_to_output(frame)
         gen_latency_ms: Optional[float] = None
 
         state.mode = mode if mode in {"single", "dual"} else state.mode
 
-        prompt = build_whimsical_prompt(style_key)
+        segmentation = self.segmenter.segment(resized)
+        if segmentation is not None:
+            state.last_mask = segmentation.mask
+            masked_frame = apply_subject_mask(resized, state.last_mask)
+        else:
+            masked_frame = resized
+
+        emotion: Optional[str] = self.classifier.classify(masked_frame)
+        state.last_emotion = emotion or state.last_emotion
+
+        prompt = state.style_controller.build_prompt(state.last_emotion, style_key)
         gen_start = time.time()
-        generated = self.generator.generate(prompt, resized, previous_output=state.generated_img)
+        generated = self.generator.generate(prompt, masked_frame, previous_output=state.generated_img)
         self.scheduler.record_latency(time.time() - gen_start)
         if generated is not None:
             upscaled = self.generator.upscale_for_display(generated, target_shape)
@@ -84,7 +106,12 @@ class InferencePipeline:
             gen_latency_ms = (time.time() - gen_start) * 1000
             state.last_latency_ms = gen_latency_ms
 
-        return state.generated_img, state.has_pending_image, gen_latency_ms or state.last_latency_ms
+        return (
+            state.last_emotion,
+            state.generated_img,
+            state.has_pending_image,
+            gen_latency_ms or state.last_latency_ms,
+        )
 
 
 def _decode_frame(data_url: str) -> Optional[np.ndarray]:
@@ -409,7 +436,7 @@ def _build_html(default_mode: str) -> str:
     <body>
         <header>
             <h1>AI Mood Mirror</h1>
-            <p class="subhead">Stream your webcam or upload a portrait. Frames are fed directly into the diffusion model to generate a fast, whimsical portrait.</p>
+            <p class="subhead">Stream your webcam or upload a portrait. Frames are analyzed for mood and fed into the diffusion model to generate a fast, art-house portrait with bold, immersive backgrounds.</p>
         </header>
 
         <main>
@@ -454,6 +481,10 @@ def _build_html(default_mode: str) -> str:
                             <div class="value" id="mode-label">{default_mode_label}</div>
                         </div>
                         <div class="metric">
+                            <div class="label">Detected mood</div>
+                            <div class="value" id="emotion-label">--</div>
+                        </div>
+                        <div class="metric">
                             <div class="label">Generation latency</div>
                             <div class="value" id="latency-label">--</div>
                         </div>
@@ -478,6 +509,7 @@ def _build_html(default_mode: str) -> str:
             const uploadArea = document.getElementById('upload-area');
             const modeSelect = document.getElementById('mode');
             const modeLabel = document.getElementById('mode-label');
+            const emotionLabel = document.getElementById('emotion-label');
             const latencyLabel = document.getElementById('latency-label');
 
             const defaultMode = '{default_mode_value}';
@@ -594,7 +626,7 @@ def _build_html(default_mode: str) -> str:
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
                     if (payload.status === 'models_ready') {
-                        setStatus(`Models ready on ${payload.device}. Diffusion: ${payload.diffusion_model}.`);
+                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}, ControlNet: ${payload.controlnet_model}.`);
                         return;
                     }
 
@@ -602,6 +634,10 @@ def _build_html(default_mode: str) -> str:
                         inferenceMode = payload.mode;
                         modeSelect.value = payload.mode;
                         modeLabel.textContent = payload.mode === 'dual' ? 'Dual node' : 'Single node';
+                    }
+                    if (payload.emotion) {
+                        emotionLabel.textContent = payload.emotion;
+                        setStatus(`Mood detected: ${payload.emotion}`);
                     }
                     if (payload.latency_ms !== undefined) {
                         latencyLabel.textContent = `${payload.latency_ms.toFixed(1)} ms`;
@@ -692,6 +728,8 @@ def create_app(config: AppConfig) -> FastAPI:
             {
                 "status": "models_ready",
                 "diffusion_model": config.diffusion_model,
+                "controlnet_model": config.controlnet_model,
+                "emotion_model": config.emotion_model,
                 "device": config.device,
             }
         )
@@ -709,11 +747,15 @@ def create_app(config: AppConfig) -> FastAPI:
                     await websocket.send_json({"error": "invalid_frame"})
                     continue
 
-                generated, has_pending, latency_ms = pipeline.process(frame, style_key, mode, state)
+                emotion, generated, has_pending, latency_ms = pipeline.process(
+                    frame, style_key, mode, state
+                )
                 response: dict[str, Optional[str]] = {
                     "style": style_key,
                     "mode": state.mode,
                 }
+                if emotion is not None:
+                    response["emotion"] = emotion
                 if generated is not None and has_pending:
                     encoded = _encode_image_b64(generated)
                     if encoded:
