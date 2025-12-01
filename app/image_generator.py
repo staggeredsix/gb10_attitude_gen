@@ -49,9 +49,9 @@ class ImageGenerator:
 
         self.device = resolved
         dtypes = self._preferred_dtypes()
-        self.num_inference_steps = 2
-        self.guidance_scale = 0.0
-        self.conditioning_scale = 0.85
+        self.num_inference_steps = 6
+        self.guidance_scale = 3.5
+        self.conditioning_scale = 0.9
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtypes)
 
         self.output_size = self._determine_output_size()
@@ -110,8 +110,8 @@ class ImageGenerator:
             )
 
         def _is_gguf_model(name: str) -> bool:
-            lowered = name.lower()
-            return lowered.endswith(".gguf") or "gguf" in lowered
+            lowered = name.lower().rstrip("/")
+            return "gguf" in lowered
 
         def _build_pipeline(target_model: str, dtype: torch.dtype) -> _PipelineBundle:
             nonlocal controlnet
@@ -299,24 +299,8 @@ class ImageGenerator:
         blurred = cv2.GaussianBlur(init_image, (5, 5), 0)
         edges = cv2.Canny(blurred, 100, 200)
 
-        if previous_output is not None:
-            prev_resized = cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0]))
-            prev_blurred = cv2.GaussianBlur(prev_resized, (5, 5), 0)
-            prev_edges = cv2.Canny(prev_blurred, 75, 175)
-            edges = cv2.addWeighted(edges, 0.6, prev_edges, 0.4, 0)
-
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
         return Image.fromarray(control)
-
-    def _blend_frames(self, new_image: np.ndarray, previous_image: np.ndarray | None) -> np.ndarray:
-        if previous_image is None:
-            return new_image
-
-        if previous_image.shape != new_image.shape:
-            previous_image = cv2.resize(previous_image, (new_image.shape[1], new_image.shape[0]))
-
-        blend_ratio = 0.2  # prioritize prior frame to maintain visual continuity
-        return cv2.addWeighted(new_image, blend_ratio, previous_image, 1 - blend_ratio, 0)
 
     def _should_fallback_to_cpu(self, exc: Exception) -> bool:
         if self.device.type == "cpu":
@@ -344,31 +328,7 @@ class ImageGenerator:
                 output_type="np",
             )
 
-            if previous_output is not None:
-                blended_condition = cv2.addWeighted(
-                    init_image,
-                    0.45,
-                    cv2.resize(previous_output, (init_image.shape[1], init_image.shape[0])),
-                    0.55,
-                    0,
-                )
-                pipeline_kwargs["image"] = Image.fromarray(
-                    cv2.cvtColor(blended_condition.astype(np.uint8), cv2.COLOR_BGR2RGB)
-                )
-                pipeline_kwargs["strength"] = 0.35
-
-            try:
-                result = self.bundle.pipeline(**pipeline_kwargs)
-            except TypeError as exc:
-                if "image" in pipeline_kwargs and "unexpected keyword argument 'image'" in str(exc):
-                    LOGGER.warning(
-                        "Init image conditioning not supported by current pipeline; retrying without init image"
-                    )
-                    pipeline_kwargs.pop("image", None)
-                    pipeline_kwargs.pop("strength", None)
-                    result = self.bundle.pipeline(**pipeline_kwargs)
-                else:
-                    raise
+            result = self.bundle.pipeline(**pipeline_kwargs)
             image = result.images[0]
 
         if not np.isfinite(image).all():
@@ -376,7 +336,7 @@ class ImageGenerator:
             image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
 
         image_uint8 = np.clip(image * 255, 0, 255).astype(np.uint8)
-        return self._blend_frames(cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR), previous_output)
+        return cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR)
 
     def generate(
         self, prompt: str, init_image: np.ndarray | None, previous_output: np.ndarray | None = None

@@ -11,9 +11,11 @@ import numpy as np
 
 from .camera import Camera
 from .config import AppConfig, load_config, parse_args
+from .emotion_classifier import EmotionClassifier
+from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .generation_scheduler import AdaptiveGenerationScheduler
 from .image_generator import ImageGenerator
-from .prompt_builder import build_whimsical_prompt
+from .prompt_builder import MoodStyleController
 from .ui import show_window
 
 LOGGER = logging.getLogger(__name__)
@@ -25,6 +27,10 @@ def run(config: AppConfig) -> None:
     LOGGER.info("Starting AI Mood Mirror on %s", config.device)
 
     try:
+        classifier = EmotionClassifier(config.emotion_model, config.device)
+        segmenter = FaceSegmenter(
+            config.face_segmentation_model, config.device, config.segmentation_min_area
+        )
         diffusion_device = config.diffusion_device or config.device
         generator = ImageGenerator(
             config.diffusion_model, config.controlnet_model, diffusion_device
@@ -34,6 +40,8 @@ def run(config: AppConfig) -> None:
         return
 
     generated_img: Optional[np.ndarray] = None
+    last_mask: Optional[np.ndarray] = None
+    style_controller = MoodStyleController(transition_seconds=10.0)
 
     try:
         with Camera(config.camera_index) as camera:
@@ -49,11 +57,17 @@ def run(config: AppConfig) -> None:
 
                 if scheduler.should_generate():
                     resized_frame = generator.resize_to_output(frame)
-                    prompt = build_whimsical_prompt()
+                    segmentation = segmenter.segment(resized_frame)
+                    if segmentation is not None:
+                        last_mask = segmentation.mask
+                        masked_frame = apply_subject_mask(resized_frame, last_mask)
+                    else:
+                        masked_frame = resized_frame
+
+                    emotion: Optional[str] = classifier.classify(masked_frame)
+                    prompt = style_controller.build_prompt(emotion)
                     gen_start = time.time()
-                    generated = generator.generate(
-                        prompt, resized_frame, previous_output=generated_img
-                    )
+                    generated = generator.generate(prompt, masked_frame, previous_output=generated_img)
                     scheduler.record_latency(time.time() - gen_start)
                     if generated is not None:
                         generated_img = generator.upscale_for_display(
