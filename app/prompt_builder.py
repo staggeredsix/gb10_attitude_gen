@@ -95,6 +95,25 @@ TEXTURE_GARNISH = [
     "subtle film halation, glassy reflections, layered mixed media glaze",
 ]
 
+BACKDROP_MOTIFS = [
+    "gilded gallery mural made of layered brushwork and light leaks",
+    "floating canvas shards in a softly lit studio atrium",
+    "luminous abstract fresco with drifting pigment clouds",
+    "dreamy museum alcove with hand-painted gradients and ink wisps",
+    "large-scale mixed media tapestry glowing with cinematic rim lights",
+]
+
+
+def _trim_prompt(prompt: str, max_tokens: int = 70) -> str:
+    """Trim prompts to a CLIP-friendly token budget to avoid truncation warnings."""
+
+    tokens = prompt.split()
+    if len(tokens) <= max_tokens:
+        return prompt
+
+    trimmed = " ".join(tokens[:max_tokens])
+    return trimmed.rstrip(",;")
+
 
 def _random_tail() -> str:
     whimsical = random.choice(WHIMSICAL_SPINS)
@@ -105,6 +124,11 @@ def _random_tail() -> str:
 
 def _random_focus() -> str:
     return random.choice(SUBJECT_FOCUS)
+
+
+def _random_backdrop() -> str:
+    return random.choice(BACKDROP_MOTIFS)
+
 
 
 def _resolve_style(style_key: str) -> str:
@@ -118,10 +142,11 @@ def build_whimsical_prompt(style_key: Optional[str] = None) -> str:
     """Return a playful, background-forward prompt for the diffusion pipeline."""
 
     style = _resolve_style(style_key or "whimsical")
-    return (
-        "an emotive painterly portrait of the person, "
-        f"{_random_focus()}, {style}, {_random_tail()}, immersive painterly background, luminous atmosphere"
+    prompt = (
+        "an emotive painterly portrait of the person with the subject crisply segmented from the background, "
+        f"{_random_focus()}, {style}, {_random_tail()}, {_random_backdrop()}, background painted separately, no paint on the face, luminous atmosphere"
     )
+    return _trim_prompt(prompt)
 
 
 class MoodStyleController:
@@ -175,21 +200,23 @@ class MoodStyleController:
         target_style_key = style_key or self._target_emotion
         blended_style = self._blend_styles(blend_style_key, target_style_key, progress)
 
-        return (
-            "a surreal, highly detailed portrait of the person, "
+        prompt = (
+            "a surreal, highly detailed portrait of the person with a clean subject mask, "
             f"{_random_focus()}, mood drifting toward {self._target_emotion}, {blended_style}, "
-            f"{self._tail}, grand immersive background installation, cinematic glow"
+            f"{self._tail}, {_random_backdrop()}, artistic backdrop only, no low-poly rendering, cinematic glow"
         )
+        return _trim_prompt(prompt)
 
 
 def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
     """Return a flux diffusion prompt given an emotion and style template."""
 
     style = _resolve_style(style_key or emotion)
-    return (
-        "a vivid, textured portrait of the person with "
-        f"{emotion} mood, {_random_focus()}, {style}, {_random_tail()}, dramatic art installation background, professional lighting"
+    prompt = (
+        "a vivid, textured portrait of the person with a separate, imaginative background and "
+        f"{emotion} mood, {_random_focus()}, {style}, {_random_tail()}, {_random_backdrop()}, subject remains natural while the background is painterly, professional lighting"
     )
+    return _trim_prompt(prompt)
 
 
 __all__ = [
