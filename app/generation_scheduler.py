@@ -39,4 +39,7 @@ class AdaptiveGenerationScheduler:
         target = max(latency_s * (1 + self.overhead_ratio), self.min_interval)
         blended = (1 - self.smoothing) * self.interval + self.smoothing * target
         self.interval = min(self.max_interval, max(self.min_interval, blended))
-        self._last_timestamp = time.time()
+        # Anchor the interval to the generation *start* by rewinding the clock
+        # by the time spent rendering. This keeps the start-to-start cadence
+        # aligned with the blended interval instead of double-counting latency.
+        self._last_timestamp = time.time() - latency_s
