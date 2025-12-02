@@ -19,6 +19,7 @@ dependencies = [
     "diffusers",
     "sdnq @ git+https://github.com/Disty0/sdnq",
     "numpy",
+    "httpx",
     "fastapi",
     "uvicorn[standard]",
     "pillow",
@@ -29,6 +30,7 @@ dependencies = [
 [project.scripts]
 ai-mood-mirror = "app.main:main"
 ai-mood-mirror-web = "app.web:main"
+ai-mood-mirror-diffusion = "app.diffusion_worker:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

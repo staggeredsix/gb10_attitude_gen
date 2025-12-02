@@ -114,7 +114,7 @@ docker run --rm -it \
 ### Deployment scripts
 
 - **Single node:** `./scripts/single_spark.sh` builds the image locally and launches the web UI on the current machine (defaults to port `8000`).
-- **Dual node:** `VISION_HOST=<dgx1> DIFFUSION_HOST=<dgx2> ./scripts/dual_spark.sh` configures the dual 100G ports, syncs the repo (including `./models`) to each host, builds the container, and runs a quick connectivity/GPU sanity check.
+- **Dual node:** `./scripts/dual_spark.sh <SECOND_SPARK_IP> [ssh_user]` builds the image, deploys the primary vision/web stack locally with `CLUSTER_MODE=dual`, syncs the repo to the secondary Spark, and starts one diffusion worker per GPU on ports `9000+N`.
 
 ## Notes
 
