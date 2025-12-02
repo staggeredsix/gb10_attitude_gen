@@ -119,7 +119,7 @@ docker run --rm -it \
 ## Notes
 
 - GPU acceleration is required for both the VLM-based emotion rater and the FLUX ControlNet pipeline; startup will fail if no CUDA or MPS device is detected.
-- The default FLUX.2-dev GGUF diffusion model (`city96/FLUX.2-dev-gguf`, file `flux2-dev-Q4_0.gguf`) is optimized for the latest FLUX.2 pipeline while remaining compatible with existing CUDA setups.
+- The default FLUX.2-dev GGUF diffusion model (`city96/FLUX.2-dev-gguf`, file `flux2-dev-Q4_K_S.gguf`) is optimized for the latest FLUX.2 pipeline while remaining compatible with existing CUDA setups.
 - The app throttles image generation to avoid excessive GPU load and regenerates when the detected emotion changes.
 - If no face is detected, a visible overlay is shown and portraits are not refreshed.
 - Models must exist under `./models` (populated via `./scripts/download_models.sh`) and are mounted into the container at `/models`; the entrypoint will exit with a clear error if they are missing.

@@ -92,9 +92,9 @@ class EmotionClassifier:
         resized = cv2.resize(face_img, (448, 448))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         prompt = (
-            "You are a concise emotion rater. Look at the face and choose the single "
-            "emotion from this list: angry, disgust, fear, happy, sad, surprise, neutral. "
-            "Respond with only the label."
+            "You are a careful, unbiased emotion rater. Look only at the facial expression "
+            "and pick one emotion from this list: angry, disgust, fear, happy, sad, surprise, neutral. "
+            "If unsure, choose neutral. Respond with a single label from the list and nothing else."
         )
         messages = [
             {
