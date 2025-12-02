@@ -44,6 +44,7 @@ require() {
 require git
 require ssh
 require docker
+require rsync
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIGIN_URL="$(git -C "${REPO_ROOT}" config --get remote.origin.url)"
@@ -71,6 +72,17 @@ sync_remote_repo() {
     git reset --hard '${CURRENT_COMMIT}'"
 }
 
+sync_models() {
+  if [[ ! -d "${REPO_ROOT}/models" ]]; then
+    echo "[warn] No local ./models directory found; secondary diffusion workers will download models as needed"
+    ssh "${SSH_USER}@${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}/models'"
+    return
+  fi
+
+  echo "[info] Syncing models cache to secondary Spark"
+  rsync -az --delete "${REPO_ROOT}/models/" "${SSH_USER}@${SECOND_SPARK_IP}:${REMOTE_DIR}/models/"
+}
+
 start_remote_workers() {
   echo "[info] Building image on secondary Spark (${SECOND_SPARK_IP})"
   ssh "${SSH_USER}@${SECOND_SPARK_IP}" "cd '${REMOTE_DIR}' && DOCKER_BUILDKIT=1 docker build -t '${IMAGE_TAG}' ."
@@ -89,6 +101,7 @@ start_remote_workers() {
         -e AI_MOOD_MIRROR_DIFFUSION_DEVICE=\"cuda:\${i}\" \
         -e PORT=\"\${PORT}\" \
         -p \"\${PORT}:9000\" \
+        -v '${REMOTE_DIR}/models:/models' \
         '${IMAGE_TAG}' \
         ai-mood-mirror-diffusion --host 0.0.0.0 --port 9000; \
     done"
@@ -110,6 +123,9 @@ check_remote_tools
 
 echo "[step] Syncing repository to secondary Spark"
 sync_remote_repo
+
+echo "[step] Syncing model cache"
+sync_models
 
 echo "[step] Deploying diffusion workers"
 start_remote_workers
