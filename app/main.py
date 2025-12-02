@@ -42,6 +42,8 @@ def run(config: AppConfig) -> None:
     generated_img: Optional[np.ndarray] = None
     last_mask: Optional[np.ndarray] = None
     reference_control: Optional[np.ndarray] = None
+    generation_count = 0
+    reference_reset_interval = 3
     style_controller = MoodStyleController(transition_seconds=10.0)
 
     try:
@@ -57,6 +59,12 @@ def run(config: AppConfig) -> None:
                     continue
 
                 if scheduler.should_generate():
+                    previous_reference_control = reference_control
+                    refresh_reference = generation_count % reference_reset_interval == 0
+                    control_image = None if refresh_reference else reference_control
+                    if control_image is None and not refresh_reference:
+                        control_image = generated_img
+
                     resized_frame = generator.resize_to_output(frame)
                     segmentation = segmenter.segment(resized_frame)
                     if segmentation is not None:
@@ -68,14 +76,20 @@ def run(config: AppConfig) -> None:
                     emotion: Optional[str] = classifier.classify(masked_frame)
                     prompt = style_controller.build_prompt(emotion)
                     gen_start = time.time()
-                    generated, reference_control = generator.generate(
+                    generated, returned_reference = generator.generate(
                         prompt,
                         masked_frame,
                         previous_output=generated_img,
-                        reference_control=reference_control,
+                        reference_control=control_image,
                     )
                     scheduler.record_latency(time.time() - gen_start)
+                    reference_control = (
+                        returned_reference
+                        if returned_reference is not None
+                        else control_image or previous_reference_control
+                    )
                     if generated is not None:
+                        generation_count += 1
                         generated_img = generated
 
                 if config.show_windows:
