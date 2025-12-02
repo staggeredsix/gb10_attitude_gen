@@ -42,6 +42,7 @@ class SessionState:
     style_controller: MoodStyleController = field(
         default_factory=lambda: MoodStyleController(transition_seconds=10.0)
     )
+    identity_frame: Optional[np.ndarray] = None
 
 
 class InferencePipeline:
@@ -90,11 +91,16 @@ class InferencePipeline:
         emotion: Optional[str] = self.classifier.classify(masked_frame)
         state.last_emotion = emotion or state.last_emotion or "neutral"
 
+        if state.identity_frame is None and segmentation is not None:
+            state.identity_frame = masked_frame.copy()
+
+        identity_frame = state.identity_frame if state.identity_frame is not None else masked_frame
+
         prompt = state.style_controller.build_prompt(state.last_emotion, style_key)
         gen_start = time.time()
         generated, state.reference_control = self.generator.generate(
             prompt,
-            masked_frame,
+            identity_frame,
             previous_output=state.generated_img,
             reference_control=state.reference_control,
         )

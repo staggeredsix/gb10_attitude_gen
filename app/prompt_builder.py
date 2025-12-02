@@ -288,9 +288,14 @@ class MoodStyleController:
         blended_style = self._blend_styles(blend_style_key, target_style_key, progress)
 
         prompt = (
-            "a surreal, highly detailed portrait of the person with a clean subject cutout, "
-            f"{_random_focus()}, mood drifting toward {self._target_emotion}, {blended_style}, "
-            f"{self._tail}, {_resolve_mood_backdrop(self._target_emotion)}, artistic backdrop only, no face coverings or medical masks, no low-poly rendering, cinematic glow"
+            "a surreal, neon-swirled oil painting portrait of the same person, "
+            "with a clean subject cutout, "
+            f"{_random_focus()}, mood drifting toward {self._target_emotion}, "
+            f"{blended_style}, {self._tail}, "
+            f"{_resolve_mood_backdrop(self._target_emotion)}, "
+            "cosmic brushstroke patterns around the head, impasto texture, "
+            "luminous warm and cool gradients, "
+            "no face coverings or medical masks, no low-poly rendering, cinematic glow"
         )
         return _trim_prompt(prompt)
 
