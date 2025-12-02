@@ -55,6 +55,7 @@ class ImageGenerator:
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtypes)
 
         self.output_size = self._determine_output_size()
+        self.reference_control: np.ndarray | None = None
 
         controlnet_config = self.bundle.pipeline.controlnet.config
         is_union_model = bool(getattr(controlnet_config, "union", False)) or "union" in controlnet_name.lower()
@@ -284,19 +285,13 @@ class ImageGenerator:
         width, height = self.output_size
         return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-    def upscale_for_display(self, image: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
-        """Upscale or downscale an image to match a target (height, width)."""
-
-        target_height, target_width = target_shape
-        if image.shape[0] == target_height and image.shape[1] == target_width:
-            return image
-        return cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_CUBIC)
-
-    @staticmethod
     def _prepare_control_image(
-        init_image: np.ndarray, previous_output: np.ndarray | None
+        self, init_image: np.ndarray, previous_output: np.ndarray | None
     ) -> Image.Image:
-        blurred = cv2.GaussianBlur(init_image, (5, 5), 0)
+        if self.reference_control is None:
+            self.reference_control = init_image.copy()
+
+        blurred = cv2.GaussianBlur(self.reference_control, (5, 5), 0)
         edges = cv2.Canny(blurred, 100, 200)
 
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)

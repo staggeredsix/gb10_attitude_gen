@@ -70,13 +70,7 @@ def run(config: AppConfig) -> None:
                     generated = generator.generate(prompt, masked_frame, previous_output=generated_img)
                     scheduler.record_latency(time.time() - gen_start)
                     if generated is not None:
-                        generated_img = generator.upscale_for_display(
-                            generated, frame.shape[:2]
-                        )
-                elif generated_img is not None:
-                    generated_img = generator.upscale_for_display(
-                        generated_img, frame.shape[:2]
-                    )
+                        generated_img = generated
 
                 if config.show_windows:
                     show_window("Webcam", frame)
