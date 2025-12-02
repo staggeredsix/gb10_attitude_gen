@@ -17,7 +17,15 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from .config import AppConfig, load_config, parse_args
+from .cluster import generate_remote_image
+from .config import (
+    AppConfig,
+    ClusterConfig,
+    ClusterMode,
+    load_cluster_config,
+    load_config,
+    parse_args,
+)
 from .emotion_classifier import EmotionClassifier
 from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .generation_scheduler import AdaptiveGenerationScheduler
@@ -48,25 +56,64 @@ class SessionState:
 class InferencePipeline:
     """Run detection, classification, and generation for incoming frames."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, cluster_cfg: ClusterConfig) -> None:
         self.config = config
+        self.cluster_cfg = cluster_cfg
         self.classifier = EmotionClassifier(config.emotion_model, config.device)
-        self.generator = ImageGenerator(
-            config.diffusion_model, config.controlnet_model, config.device
-        )
         self.segmenter = FaceSegmenter(
             config.face_segmentation_model, config.device, config.segmentation_min_area
         )
         self.scheduler = AdaptiveGenerationScheduler(
             initial_interval=max(config.generation_interval, 0.1)
         )
+        self.generator: ImageGenerator | None = None
+        if cluster_cfg.mode == ClusterMode.SINGLE:
+            diffusion_device = config.diffusion_device or config.device
+            self.generator = ImageGenerator(
+                config.diffusion_model, config.controlnet_model, diffusion_device
+            )
         LOGGER.info(
-            "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s)",
+            "Models ready (emotion='%s', diffusion='%s', controlnet='%s', device=%s, cluster_mode=%s)",
             config.emotion_model,
             config.diffusion_model,
             config.controlnet_model,
             config.device,
+            cluster_cfg.mode.value,
         )
+
+    def _resize_frame(self, frame: cv2.typing.MatLike) -> cv2.typing.MatLike:
+        if self.generator is None:
+            return frame
+        return self.generator.resize_to_output(frame)
+
+    def _generate_remote(
+        self,
+        prompt: str,
+        identity_frame: np.ndarray,
+        previous_output: Optional[np.ndarray],
+        reference_control: Optional[np.ndarray],
+        mood: Optional[str],
+    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        control_image = reference_control if reference_control is not None else previous_output
+        payload: dict[str, object] = {"prompt": prompt}
+        if mood:
+            payload["mood"] = mood
+
+        reference_b64 = _encode_image_b64(identity_frame)
+        control_b64 = _encode_image_b64(control_image) if control_image is not None else None
+        if reference_b64:
+            payload["reference_image_b64"] = reference_b64
+        if control_b64:
+            payload["control_image_b64"] = control_b64
+
+        try:
+            image_bytes = generate_remote_image(self.cluster_cfg, payload)
+            image_np = np.frombuffer(image_bytes, dtype=np.uint8)
+            decoded = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+            return decoded, control_image or identity_frame
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Remote diffusion failed: %s", exc)
+            return None, control_image or identity_frame
 
     def process(
         self, frame: cv2.typing.MatLike, style_key: Optional[str], mode: str, state: SessionState
@@ -76,10 +123,11 @@ class InferencePipeline:
         if not self.scheduler.should_generate():
             return state.last_emotion, state.generated_img, state.has_pending_image, state.last_latency_ms
 
-        resized = self.generator.resize_to_output(frame)
+        resized = self._resize_frame(frame)
         gen_latency_ms: Optional[float] = None
 
-        state.mode = mode if mode in {"single", "dual"} else state.mode
+        active_mode = mode if self.cluster_cfg.mode == ClusterMode.DUAL else ClusterMode.SINGLE.value
+        state.mode = active_mode if active_mode in {"single", "dual"} else state.mode
 
         segmentation = self.segmenter.segment(resized)
         if segmentation is not None:
@@ -98,12 +146,23 @@ class InferencePipeline:
 
         prompt = state.style_controller.build_prompt(state.last_emotion, style_key)
         gen_start = time.time()
-        generated, state.reference_control = self.generator.generate(
-            prompt,
-            identity_frame,
-            previous_output=state.generated_img,
-            reference_control=state.reference_control,
-        )
+        if self.cluster_cfg.mode == ClusterMode.SINGLE:
+            assert self.generator is not None
+            generated, state.reference_control = self.generator.generate(
+                prompt,
+                identity_frame,
+                previous_output=state.generated_img,
+                reference_control=state.reference_control,
+            )
+        else:
+            generated, reference = self._generate_remote(
+                prompt,
+                identity_frame,
+                state.generated_img,
+                state.reference_control,
+                state.last_emotion,
+            )
+            state.reference_control = reference
         self.scheduler.record_latency(time.time() - gen_start)
         if generated is not None:
             state.generated_img = generated
@@ -707,7 +766,13 @@ def create_app(config: AppConfig) -> FastAPI:
     """Create the FastAPI application with configured routes."""
 
     app = FastAPI()
-    pipeline = InferencePipeline(config)
+    cluster_cfg = load_cluster_config()
+    try:
+        cluster_cfg.validate()
+    except ValueError as exc:
+        LOGGER.error("Cluster configuration invalid: %s", exc)
+        raise
+    pipeline = InferencePipeline(config, cluster_cfg)
 
     @app.get("/")
     async def index() -> HTMLResponse:  # noqa: D401

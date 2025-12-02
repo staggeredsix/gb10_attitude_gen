@@ -5,6 +5,7 @@ import argparse
 import logging
 import os
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 import torch
@@ -120,9 +121,36 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+class ClusterMode(str, Enum):
+    SINGLE = "single"
+    DUAL = "dual"
+
+
+@dataclass
+class ClusterConfig:
+    mode: ClusterMode
+    second_spark_ip: Optional[str]
+    second_spark_ssh_user: str
+
+    def validate(self) -> None:
+        if self.mode == ClusterMode.DUAL and not self.second_spark_ip:
+            raise ValueError("SECOND_SPARK_IP must be set when CLUSTER_MODE=dual")
+
+    @staticmethod
+    def from_env() -> "ClusterConfig":
+        raw_mode = os.getenv("CLUSTER_MODE", ClusterMode.SINGLE.value).lower()
+        mode = ClusterMode(raw_mode) if raw_mode in {m.value for m in ClusterMode} else ClusterMode.SINGLE
+        return ClusterConfig(
+            mode=mode,
+            second_spark_ip=os.getenv("SECOND_SPARK_IP"),
+            second_spark_ssh_user=os.getenv("SECOND_SPARK_SSH_USER", "ubuntu"),
+        )
+
+
 def load_config(args: argparse.Namespace) -> AppConfig:
     """Create an AppConfig from CLI args and environment variables."""
 
+    cluster_cfg = ClusterConfig.from_env()
     env_camera = os.getenv(f"{ENV_PREFIX}CAMERA_INDEX")
     env_emotion_model = os.getenv(f"{ENV_PREFIX}EMOTION_MODEL")
     env_diffusion_model = os.getenv(f"{ENV_PREFIX}DIFFUSION_MODEL")
@@ -174,7 +202,12 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     show_windows = args.show_windows
     server_host = args.host if args.host else env_host or "0.0.0.0"
     server_port = args.port if args.port is not None else int(env_port) if env_port else 8000
-    default_mode = args.default_mode or env_default_mode or ("dual" if role_hint in {"vision", "diffusion", "dual"} else "single")
+    default_mode = (
+        args.default_mode
+        or env_default_mode
+        or cluster_cfg.mode.value
+        or ("dual" if role_hint in {"vision", "diffusion", "dual"} else "single")
+    )
     enable_https = env_enable_https if args.enable_https is None else args.enable_https
     ssl_certfile = args.ssl_certfile if args.ssl_certfile else env_ssl_certfile
     ssl_keyfile = args.ssl_keyfile if args.ssl_keyfile else env_ssl_keyfile
@@ -197,6 +230,12 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
     )
+
+
+def load_cluster_config() -> ClusterConfig:
+    """Load cluster configuration from environment variables."""
+
+    return ClusterConfig.from_env()
 
 
 __all__ = ["AppConfig", "parse_args", "load_config"]

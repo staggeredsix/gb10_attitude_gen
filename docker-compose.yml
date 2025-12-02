@@ -9,6 +9,9 @@ services:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
       ROLE: ${ROLE:-single}
+      CLUSTER_MODE: ${CLUSTER_MODE:-single}
+      SECOND_SPARK_IP: ${SECOND_SPARK_IP:-}
+      SECOND_SPARK_SSH_USER: ${SECOND_SPARK_SSH_USER:-ubuntu}
       AI_MOOD_MIRROR_DEFAULT_MODE: ${DEFAULT_MODE:-single}
       HF_HOME: /models/huggingface
       HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
