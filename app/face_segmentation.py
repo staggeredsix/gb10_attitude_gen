@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 class SegmentationResult:
     """Structured output describing a segmented face."""
 
-    mask: np.ndarray  # boolean mask (H, W) where face pixels are True
+    mask: np.ndarray  # soft mask (H, W) where face pixels approach 1.0
     bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
 
     def crop_face(self, frame_bgr: cv2.typing.MatLike) -> Optional[np.ndarray]:
@@ -50,21 +50,32 @@ class SegmentationResult:
 
 
 def apply_subject_mask(frame_bgr: np.ndarray, mask: Optional[np.ndarray]) -> np.ndarray:
-    """Apply a soft subject mask to remove the background."""
+    """Apply a softly feathered subject mask to remove the background."""
 
     if mask is None:
         return frame_bgr
 
     if mask.shape[:2] != frame_bgr.shape[:2]:
-        mask = cv2.resize(mask.astype(np.float32), (frame_bgr.shape[1], frame_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
-    mask_float = mask.astype(np.float32)
-    softened = cv2.GaussianBlur(mask_float, (9, 9), 0)
-    normalized = np.clip(softened, 0.0, 1.0)
-    mask_uint8 = (normalized * 255).astype(np.uint8)
+        mask = cv2.resize(
+            mask.astype(np.float32),
+            (frame_bgr.shape[1], frame_bgr.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
 
-    foreground = cv2.bitwise_and(frame_bgr, frame_bgr, mask=mask_uint8)
-    background = np.zeros_like(frame_bgr)
-    return cv2.add(foreground, background)
+    mask_float = mask.astype(np.float32)
+    if mask_float.max() > 1.0:
+        mask_float /= 255.0
+
+    # Feather edges aggressively to avoid rectangular bounding-box artifacts.
+    binary = (mask_float > 0.05).astype(np.uint8)
+    distance = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    if distance.max() > 0:
+        distance = distance / distance.max()
+    softened = cv2.GaussianBlur(distance, (21, 21), 0)
+    alpha = np.clip(softened, 0.0, 1.0)
+
+    foreground = frame_bgr.astype(np.float32) * alpha[..., None]
+    return np.clip(foreground, 0, 255).astype(np.uint8)
 
 
 def _expand_mask_to_upper_body(mask: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
@@ -85,14 +96,15 @@ def _expand_mask_to_upper_body(mask: np.ndarray, bbox: tuple[int, int, int, int]
     body_y1 = y1
     body_y2 = min(height, y2 + shoulder_extra_h)
 
-    expanded = np.zeros_like(mask, dtype=bool)
-    expanded[body_y1:body_y2, body_x1:body_x2] = True
+    expanded = np.zeros_like(mask, dtype=np.float32)
+    expanded[body_y1:body_y2, body_x1:body_x2] = 1.0
 
-    # Union the original mask and the expanded torso region, then smooth.
-    combined = np.logical_or(mask, expanded)
-    dilated = cv2.dilate(combined.astype(np.uint8), np.ones((9, 9), np.uint8), iterations=2)
-    softened = cv2.GaussianBlur(dilated.astype(np.float32), (7, 7), 0)
-    return softened > 0.25
+    # Union the original mask and the expanded torso region, then smooth without
+    # snapping back to a hard edge so the downstream control image has no box seams.
+    combined = np.maximum(mask.astype(np.float32), expanded)
+    dilated = cv2.dilate(combined, np.ones((9, 9), np.uint8), iterations=2)
+    softened = cv2.GaussianBlur(dilated, (9, 9), 0)
+    return np.clip(softened, 0.0, 1.0)
 
 
 class FaceSegmenter:

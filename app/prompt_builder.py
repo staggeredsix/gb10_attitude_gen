@@ -225,8 +225,8 @@ def build_whimsical_prompt(style_key: Optional[str] = None) -> str:
 
     style = _resolve_style(style_key or "whimsical")
     prompt = (
-        "an emotive painterly portrait of the person with the subject crisply segmented from the background, "
-        f"{_random_focus()}, {style}, {_random_tail()}, {_random_backdrop()}, background painted separately, no paint on the face, luminous atmosphere"
+        "an emotive painterly portrait of the person with the subject crisply separated from the background, "
+        f"{_random_focus()}, {style}, {_random_tail()}, {_random_backdrop()}, background painted separately, no face coverings or medical masks, no paint on the face, luminous atmosphere"
     )
     return _trim_prompt(prompt)
 
@@ -288,9 +288,9 @@ class MoodStyleController:
         blended_style = self._blend_styles(blend_style_key, target_style_key, progress)
 
         prompt = (
-            "a surreal, highly detailed portrait of the person with a clean subject mask, "
+            "a surreal, highly detailed portrait of the person with a clean subject cutout, "
             f"{_random_focus()}, mood drifting toward {self._target_emotion}, {blended_style}, "
-            f"{self._tail}, {_resolve_mood_backdrop(self._target_emotion)}, artistic backdrop only, no low-poly rendering, cinematic glow"
+            f"{self._tail}, {_resolve_mood_backdrop(self._target_emotion)}, artistic backdrop only, no face coverings or medical masks, no low-poly rendering, cinematic glow"
         )
         return _trim_prompt(prompt)
 

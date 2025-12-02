@@ -11,6 +11,7 @@ export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
 mkdir -p "${HUGGINGFACE_HUB_CACHE}"
 
 token="${HUGGINGFACE_TOKEN:-${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}}"
+export FLUX_GGUF_FILENAME="${FLUX_GGUF_FILENAME:-flux2-dev-Q4_K_S.gguf}"
 
 python3 - <<'PY'
 import os
@@ -25,13 +26,25 @@ MODELS = {
 
 token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 cache_dir = os.environ["HUGGINGFACE_HUB_CACHE"]
+flux_gguf_file = os.environ.get("FLUX_GGUF_FILENAME", "flux2-dev-Q4_K_S.gguf")
 
 print(f"[info] Writing snapshots to {cache_dir}")
 os.makedirs(cache_dir, exist_ok=True)
 
 for label, repo in MODELS.items():
     print(f"[download] {label}: {repo}")
-    snapshot_download(repo_id=repo, cache_dir=cache_dir, token=token, local_files_only=False, resume_download=True)
+    allow = None
+    if label == "diffusion":
+        allow = [flux_gguf_file, "*.json", "*.md"]
+        print(f"[info] restricting diffusion download to {allow}")
+    snapshot_download(
+        repo_id=repo,
+        cache_dir=cache_dir,
+        token=token,
+        local_files_only=False,
+        resume_download=True,
+        allow_patterns=allow,
+    )
 
 print("[ok] All models cached under", cache_dir)
 PY
