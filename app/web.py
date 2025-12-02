@@ -38,6 +38,7 @@ class SessionState:
     mode: str = "single"
     last_latency_ms: Optional[float] = None
     last_mask: Optional[np.ndarray] = None
+    reference_control: Optional[np.ndarray] = None
     style_controller: MoodStyleController = field(
         default_factory=lambda: MoodStyleController(transition_seconds=10.0)
     )
@@ -91,7 +92,12 @@ class InferencePipeline:
 
         prompt = state.style_controller.build_prompt(state.last_emotion, style_key)
         gen_start = time.time()
-        generated = self.generator.generate(prompt, masked_frame, previous_output=state.generated_img)
+        generated, state.reference_control = self.generator.generate(
+            prompt,
+            masked_frame,
+            previous_output=state.generated_img,
+            reference_control=state.reference_control,
+        )
         self.scheduler.record_latency(time.time() - gen_start)
         if generated is not None:
             state.generated_img = generated

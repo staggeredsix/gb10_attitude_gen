@@ -55,7 +55,6 @@ class ImageGenerator:
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtypes)
 
         self.output_size = self._determine_output_size()
-        self.reference_control: np.ndarray | None = None
 
         controlnet_config = self.bundle.pipeline.controlnet.config
         is_union_model = bool(getattr(controlnet_config, "union", False)) or "union" in controlnet_name.lower()
@@ -286,16 +285,22 @@ class ImageGenerator:
         return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
     def _prepare_control_image(
-        self, init_image: np.ndarray, previous_output: np.ndarray | None
-    ) -> Image.Image:
-        if self.reference_control is None:
-            self.reference_control = init_image.copy()
+        self,
+        init_image: np.ndarray | None,
+        previous_output: np.ndarray | None,
+        reference_control: np.ndarray | None,
+    ) -> tuple[Image.Image, np.ndarray | None]:
+        if reference_control is None and init_image is not None:
+            reference_control = init_image.copy()
 
-        blurred = cv2.GaussianBlur(self.reference_control, (5, 5), 0)
+        if reference_control is None:
+            raise ValueError("Control image preparation requires an input frame")
+
+        blurred = cv2.GaussianBlur(reference_control, (5, 5), 0)
         edges = cv2.Canny(blurred, 100, 200)
 
         control = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
-        return Image.fromarray(control)
+        return Image.fromarray(control), reference_control
 
     def _should_fallback_to_cpu(self, exc: Exception) -> bool:
         if self.device.type == "cpu":
@@ -304,15 +309,21 @@ class ImageGenerator:
         return "no kernel image is available" in message or "cuda error" in message
 
     def _generate_once(
-        self, prompt: str, init_image: np.ndarray, previous_output: np.ndarray | None = None
-    ) -> np.ndarray:
+        self,
+        prompt: str,
+        init_image: np.ndarray | None,
+        previous_output: np.ndarray | None = None,
+        reference_control: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         autocast_ctx = (
             torch.autocast(device_type=self.device.type, dtype=self.bundle.dtype)
             if self.device.type == "cuda"
             else nullcontext()
         )
         with torch.inference_mode(), autocast_ctx:
-            control_pil = self._prepare_control_image(init_image, previous_output)
+            control_pil, reference_control = self._prepare_control_image(
+                init_image, previous_output, reference_control
+            )
             pipeline_kwargs = dict(
                 prompt=prompt,
                 control_image=control_pil,
@@ -331,35 +342,43 @@ class ImageGenerator:
             image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
 
         image_uint8 = np.clip(image * 255, 0, 255).astype(np.uint8)
-        return cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR)
+        return cv2.cvtColor(image_uint8, cv2.COLOR_RGB2BGR), reference_control
 
     def generate(
-        self, prompt: str, init_image: np.ndarray | None, previous_output: np.ndarray | None = None
-    ) -> Optional[np.ndarray]:
+        self,
+        prompt: str,
+        init_image: np.ndarray | None,
+        previous_output: np.ndarray | None = None,
+        reference_control: np.ndarray | None = None,
+    ) -> tuple[Optional[np.ndarray], np.ndarray | None]:
         """Generate an image for the given prompt and return a BGR numpy array."""
 
-        if init_image is None:
+        if init_image is None and reference_control is None:
             LOGGER.debug("No init image provided for generation")
-            return None
+            return None, reference_control
 
         LOGGER.info("Generating image for prompt: %s", prompt)
         try:
-            return self._generate_once(prompt, init_image, previous_output)
+            return self._generate_once(
+                prompt, init_image, previous_output, reference_control
+            )
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
                 self._move_to_cpu()
                 try:
-                    return self._generate_once(prompt, init_image, previous_output)
+                    return self._generate_once(
+                        prompt, init_image, previous_output, reference_control
+                    )
                 except Exception as retry_exc:  # noqa: BLE001
                     LOGGER.exception(
                         "Image generation failed after CPU fallback: %s", retry_exc
                     )
-                    return None
+                    return None, reference_control
             LOGGER.exception("Image generation failed: %s", exc)
-            return None
+            return None, reference_control
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Image generation failed: %s", exc)
-            return None
+            return None, reference_control
 
 
 __all__ = ["ImageGenerator"]
