@@ -58,13 +58,41 @@ def apply_subject_mask(frame_bgr: np.ndarray, mask: Optional[np.ndarray]) -> np.
     if mask.shape[:2] != frame_bgr.shape[:2]:
         mask = cv2.resize(mask.astype(np.float32), (frame_bgr.shape[1], frame_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
     mask_float = mask.astype(np.float32)
-    softened = cv2.GaussianBlur(mask_float, (7, 7), 0)
+    softened = cv2.GaussianBlur(mask_float, (9, 9), 0)
     normalized = np.clip(softened, 0.0, 1.0)
     mask_uint8 = (normalized * 255).astype(np.uint8)
 
     foreground = cv2.bitwise_and(frame_bgr, frame_bgr, mask=mask_uint8)
     background = np.zeros_like(frame_bgr)
     return cv2.add(foreground, background)
+
+
+def _expand_mask_to_upper_body(mask: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
+    """Expand a face mask downward to include head, shoulders, and upper body."""
+
+    x1, y1, x2, y2 = bbox
+    height, width = mask.shape[:2]
+
+    face_w = x2 - x1
+    face_h = y2 - y1
+    # Extend the mask downward to capture shoulders/upper torso while widening the sides.
+    shoulder_extra_h = int(face_h * 1.8)
+    shoulder_half_w = int(face_w * 0.9)
+    center_x = (x1 + x2) // 2
+
+    body_x1 = max(0, center_x - shoulder_half_w)
+    body_x2 = min(width, center_x + shoulder_half_w)
+    body_y1 = y1
+    body_y2 = min(height, y2 + shoulder_extra_h)
+
+    expanded = np.zeros_like(mask, dtype=bool)
+    expanded[body_y1:body_y2, body_x1:body_x2] = True
+
+    # Union the original mask and the expanded torso region, then smooth.
+    combined = np.logical_or(mask, expanded)
+    dilated = cv2.dilate(combined.astype(np.uint8), np.ones((9, 9), np.uint8), iterations=2)
+    softened = cv2.GaussianBlur(dilated.astype(np.float32), (7, 7), 0)
+    return softened > 0.25
 
 
 class FaceSegmenter:
@@ -179,13 +207,19 @@ class FaceSegmenter:
         x1, x2 = int(x_indices.min()), int(x_indices.max())
         y1, y2 = int(y_indices.min()), int(y_indices.max())
 
+        # Expand to head-and-shoulders coverage to avoid central-box crops.
+        expanded_mask = _expand_mask_to_upper_body(face_mask, (x1, y1, x2, y2))
+        y_exp, x_exp = np.where(expanded_mask)
+        x1, x2 = int(x_exp.min()), int(x_exp.max())
+        y1, y2 = int(y_exp.min()), int(y_exp.max())
+
         height, width = frame_bgr.shape[:2]
         area = (x2 - x1 + 1) * (y2 - y1 + 1)
         if area / float(width * height) < self.min_face_ratio:
             LOGGER.debug("Discarding segmentation with insufficient area (%.5f)", area / float(width * height))
             return None
 
-        return SegmentationResult(mask=face_mask, bbox=(x1, y1, x2, y2))
+        return SegmentationResult(mask=expanded_mask, bbox=(x1, y1, x2, y2))
 
 
 __all__ = ["FaceSegmenter", "SegmentationResult", "apply_subject_mask"]

@@ -22,7 +22,7 @@ from .emotion_classifier import EmotionClassifier
 from .face_segmentation import FaceSegmenter, apply_subject_mask
 from .generation_scheduler import AdaptiveGenerationScheduler
 from .image_generator import ImageGenerator
-from .prompt_builder import STYLE_MAP, MoodStyleController
+from .prompt_builder import MoodStyleController
 
 LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class InferencePipeline:
             masked_frame = resized
 
         emotion: Optional[str] = self.classifier.classify(masked_frame)
-        state.last_emotion = emotion or state.last_emotion
+        state.last_emotion = emotion or state.last_emotion or "neutral"
 
         prompt = state.style_controller.build_prompt(state.last_emotion, style_key)
         gen_start = time.time()
@@ -189,9 +189,6 @@ def _prepare_tls(config: AppConfig) -> tuple[Optional[str], Optional[str]]:
 
 
 def _build_html(default_mode: str) -> str:
-    options = "\n".join(
-        f'<option value="{key}">{key.title()}</option>' for key in STYLE_MAP.keys()
-    )
     default_mode_label = "Dual node" if default_mode == "dual" else "Single node"
     template = """
     <!doctype html>
@@ -451,10 +448,6 @@ def _build_html(default_mode: str) -> str:
                     </div>
                     <div class="controls">
                         <div class="field">
-                            <label for="style">Style template</label>
-                            <select id="style">{options}</select>
-                        </div>
-                        <div class="field">
                             <label for="mode">Inference mode</label>
                             <select id="mode">
                                 <option value="single">Single node</option>
@@ -502,7 +495,6 @@ def _build_html(default_mode: str) -> str:
             const portrait = document.getElementById('portrait');
             const preview = document.getElementById('preview');
             const webcamEl = document.getElementById('webcam');
-            const styleSelect = document.getElementById('style');
             const photoInput = document.getElementById('photo');
             const sendBtn = document.getElementById('send');
             const webcamToggle = document.getElementById('use-webcam');
@@ -554,7 +546,7 @@ def _build_html(default_mode: str) -> str:
                     setStatus('No frame available to send', false);
                     return;
                 }
-                socket.send(JSON.stringify({ frame: dataUrl, style: styleSelect.value, mode: inferenceMode }));
+                socket.send(JSON.stringify({ frame: dataUrl, mode: inferenceMode }));
             }
 
             async function startWebcam() {
@@ -698,10 +690,8 @@ def _build_html(default_mode: str) -> str:
     </body>
     </html>
     """
-    return (
-        template.replace("{options}", options)
-        .replace("{default_mode_value}", default_mode)
-        .replace("{default_mode_label}", default_mode_label)
+    return template.replace("{default_mode_value}", default_mode).replace(
+        "{default_mode_label}", default_mode_label
     )
 
 
@@ -737,7 +727,6 @@ def create_app(config: AppConfig) -> FastAPI:
             while True:
                 data = await websocket.receive_json()
                 frame_data = data.get("frame")
-                style_key = data.get("style")
                 mode = data.get("mode") or state.mode
                 if not frame_data:
                     continue
@@ -748,10 +737,9 @@ def create_app(config: AppConfig) -> FastAPI:
                     continue
 
                 emotion, generated, has_pending, latency_ms = pipeline.process(
-                    frame, style_key, mode, state
+                    frame, None, mode, state
                 )
                 response: dict[str, Optional[str]] = {
-                    "style": style_key,
                     "mode": state.mode,
                 }
                 if emotion is not None:

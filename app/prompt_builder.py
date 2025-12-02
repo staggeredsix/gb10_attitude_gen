@@ -40,30 +40,98 @@ STYLE_MAP: Dict[str, List[str]] = {
         "even skylight diffusion, porcelain gradients, uncluttered background",
         "calm archival studio, linen backdrop, subtle tonal falloff",
     ],
-    "cinematic": [
-        "dramatic portrait stage with volumetric key light, fine grain, razor focus on the eyes",
-        "arthouse portrait lighting, sweeping shadows, subtle film grain and bloom",
-        "silver screen glow, balanced contrast, polished editorial sheen",
+}
+
+# Additional stylistic palettes remain available for non-mood presets when needed.
+STYLE_MAP.update(
+    {
+        "cinematic": [
+            "dramatic portrait stage with volumetric key light, fine grain, razor focus on the eyes",
+            "arthouse portrait lighting, sweeping shadows, subtle film grain and bloom",
+            "silver screen glow, balanced contrast, polished editorial sheen",
+        ],
+        "whimsical": [
+            "storybook fresco walls, pastel embers, floating ink wisps and chalk constellations",
+            "candy-lacquered fresco, dreamy firefly lights, watercolor nebula haze",
+            "hand-painted mural ambience, soft pastel fog, dancing chalk sparkles",
+        ],
+        "neon": [
+            "vibrant vaporwave bloom, magenta and cyan ribbons, luminous rim edges",
+            "electric dusk arcade, neon ribbons, chromatic aberration shimmer",
+            "holographic studio glow, ultraviolet haze, glowing edge outlines",
+        ],
+        "surreal": [
+            "collage of painted nebulae and cracked marble, slow-motion pigment trails",
+            "impossible cathedral of color, melting fresco arches, shimmering dust",
+            "floating staircases of paint, cosmic plaster textures, dreamlike gradients",
+        ],
+        "sketch": [
+            "charcoal and colored pencil crosshatching, subtle watercolor fill, expressive strokes",
+            "graphite sketchbook shading, paper texture, loose hatching and pastel washes",
+            "ink linework with soft gouache fill, gestural strokes, tactile paper grain",
+        ],
+    }
+)
+
+MOOD_BACKDROPS: Dict[str, List[str]] = {
+    "happy": [
+        "burst of joyful confetti light, radiant sky gradients, blooming abstract flowers",
+        "sunny festival murals with bold pastels, glowing bokeh ribbons",
     ],
-    "whimsical": [
-        "storybook fresco walls, pastel embers, floating ink wisps and chalk constellations",
-        "candy-lacquered fresco, dreamy firefly lights, watercolor nebula haze",
-        "hand-painted mural ambience, soft pastel fog, dancing chalk sparkles",
+    "angry": [
+        "stormy charcoal clouds streaked with crimson neon, fractured metal textures",
+        "dark industrial alley with molten copper reflections and razor shadows",
     ],
-    "neon": [
-        "vibrant vaporwave bloom, magenta and cyan ribbons, luminous rim edges",
-        "electric dusk arcade, neon ribbons, chromatic aberration shimmer",
-        "holographic studio glow, ultraviolet haze, glowing edge outlines",
+    "sad": [
+        "hushed watercolor rain outside tall windows, muted teal mist",
+        "softly dripping ink wash over cool stone walls, distant city lights",
     ],
-    "surreal": [
-        "collage of painted nebulae and cracked marble, slow-motion pigment trails",
-        "impossible cathedral of color, melting fresco arches, shimmering dust",
-        "floating staircases of paint, cosmic plaster textures, dreamlike gradients",
+    "surprise": [
+        "prismatic starburst of glass shards mid-air, neon sparks frozen in motion",
+        "sudden burst of glowing confetti nebula swirling behind the subject",
     ],
-    "sketch": [
-        "charcoal and colored pencil crosshatching, subtle watercolor fill, expressive strokes",
-        "graphite sketchbook shading, paper texture, loose hatching and pastel washes",
-        "ink linework with soft gouache fill, gestural strokes, tactile paper grain",
+    "fear": [
+        "eerie moonlit forest silhouettes with cyan fog and splintered beams",
+        "shadowy corridor lit by cold blue bioluminescence and drifting embers",
+    ],
+    "disgust": [
+        "acidic urban grime, glitchy signage, dripping toxic green graffiti",
+        "rusted pipes with oily reflections, distorted chrome puddles",
+    ],
+    "neutral": [
+        "museum alcove gradients, calm linen drapery, balanced gallery light",
+        "soft editorial studio with porcelain tones and gentle falloff",
+    ],
+}
+
+MOOD_SUBJECT_TREATMENTS: Dict[str, List[str]] = {
+    "happy": [
+        "cheerful expression, bright catchlights, relaxed shoulders, natural smile",
+        "uplifted gaze, luminous cheeks, inviting posture",
+    ],
+    "angry": [
+        "tense jawline, fierce gaze, dramatic rim lighting on cheekbones",
+        "furrowed brows, sculpted contrast, intense pose",
+    ],
+    "sad": [
+        "soft lowered gaze, delicate shadows under eyes, contemplative pose",
+        "gentle expression with misty highlights, tender posture",
+    ],
+    "surprise": [
+        "wide eyes and lifted brows, kinetic hair details, crisp highlights",
+        "captured gasp with sparkling eyes, playful shock",
+    ],
+    "fear": [
+        "guarded posture, reflective eyes, cool highlights along the nose",
+        "subtle trembling lips, alert gaze, dramatic underlighting",
+    ],
+    "disgust": [
+        "raised brow and curled lip, hard side light, gritty texture",
+        "defensive shoulders, sharp cheek shadows, uneasy expression",
+    ],
+    "neutral": [
+        "calm breath, balanced gaze, soft facial planes, poised shoulders",
+        "steady posture, even light, relaxed mouth",
     ],
 }
 
@@ -138,6 +206,20 @@ def _resolve_style(style_key: str) -> str:
     return random.choice(styles)
 
 
+def _resolve_mood_backdrop(emotion: str) -> str:
+    backdrops = MOOD_BACKDROPS.get(emotion)
+    if not backdrops:
+        backdrops = MOOD_BACKDROPS["neutral"]
+    return random.choice(backdrops)
+
+
+def _resolve_subject_treatment(emotion: str) -> str:
+    treatments = MOOD_SUBJECT_TREATMENTS.get(emotion)
+    if not treatments:
+        treatments = MOOD_SUBJECT_TREATMENTS["neutral"]
+    return random.choice(treatments)
+
+
 def build_whimsical_prompt(style_key: Optional[str] = None) -> str:
     """Return a playful, background-forward prompt for the diffusion pipeline."""
 
@@ -163,10 +245,15 @@ class MoodStyleController:
     def _blend_styles(self, style_key: str, target_key: str, weight: float) -> str:
         source_style = _resolve_style(style_key)
         target_style = _resolve_style(target_key)
+        source_backdrop = _resolve_mood_backdrop(style_key)
+        target_backdrop = _resolve_mood_backdrop(target_key)
+        source_subject = _resolve_subject_treatment(style_key)
+        target_subject = _resolve_subject_treatment(target_key)
         weight_pct = int(weight * 100)
         return (
-            f"background is {100 - weight_pct}% {self._source_emotion} ({source_style}) and "
-            f"{weight_pct}% {self._target_emotion} ({target_style}), ornate gallery ambience, luminous gradients"
+            f"{100 - weight_pct}% {self._source_emotion} ({source_style}, {source_backdrop}, {source_subject}) and "
+            f"{weight_pct}% {self._target_emotion} ({target_style}, {target_backdrop}, {target_subject}), "
+            "ornate gallery ambience, luminous gradients"
         )
 
     def _advance(self) -> float:
@@ -203,7 +290,7 @@ class MoodStyleController:
         prompt = (
             "a surreal, highly detailed portrait of the person with a clean subject mask, "
             f"{_random_focus()}, mood drifting toward {self._target_emotion}, {blended_style}, "
-            f"{self._tail}, {_random_backdrop()}, artistic backdrop only, no low-poly rendering, cinematic glow"
+            f"{self._tail}, {_resolve_mood_backdrop(self._target_emotion)}, artistic backdrop only, no low-poly rendering, cinematic glow"
         )
         return _trim_prompt(prompt)
 
@@ -211,10 +298,14 @@ class MoodStyleController:
 def build_prompt(emotion: str, style_key: Optional[str] = None) -> str:
     """Return a flux diffusion prompt given an emotion and style template."""
 
-    style = _resolve_style(style_key or emotion)
+    mood_key = emotion or "neutral"
+    style = _resolve_style(style_key or mood_key)
+    backdrop = _resolve_mood_backdrop(mood_key)
+    subject_render = _resolve_subject_treatment(mood_key)
     prompt = (
-        "a vivid, textured portrait of the person with a separate, imaginative background and "
-        f"{emotion} mood, {_random_focus()}, {style}, {_random_tail()}, {_random_backdrop()}, subject remains natural while the background is painterly, professional lighting"
+        "a vivid, textured portrait of the person with a separate, imaginative background that mirrors the detected mood, "
+        f"{mood_key} energy on the subject ({subject_render}), {_random_focus()}, {style}, {_random_tail()}, {backdrop}, "
+        "subject rendered realistically while the background becomes painterly, professional lighting"
     )
     return _trim_prompt(prompt)
 
