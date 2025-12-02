@@ -26,6 +26,11 @@ class _PipelineBundle:
 class ImageGenerator:
     """Generate images from text prompts using a diffusion pipeline conditioned on webcam input."""
 
+    _NEGATIVE_PROMPT = (
+        "different person, photorealistic, anime, cartoon, deformed face, distorted identity, "
+        "extra faces, mismatched identity, text, watermark"
+    )
+
     def __init__(self, model_name: str, controlnet_name: str, device: str) -> None:
         resolved = torch.device(device)
 
@@ -53,6 +58,7 @@ class ImageGenerator:
         self.guidance_scale = 3.5
         self.conditioning_scale = 0.9
         self.bundle = self._load_pipeline(model_name, controlnet_name, dtypes)
+        self.negative_prompt = self._sanitize_prompt(self._NEGATIVE_PROMPT)
 
         self.output_size = self._determine_output_size()
 
@@ -336,6 +342,7 @@ class ImageGenerator:
     def _generate_once(
         self,
         prompt: str,
+        negative_prompt: str | None,
         init_image: np.ndarray | None,
         previous_output: np.ndarray | None = None,
         reference_control: np.ndarray | None = None,
@@ -351,6 +358,7 @@ class ImageGenerator:
             )
             pipeline_kwargs = dict(
                 prompt=prompt,
+                negative_prompt=negative_prompt,
                 control_image=control_pil,
                 control_mode=self.control_mode,
                 num_inference_steps=self.num_inference_steps,
@@ -386,16 +394,25 @@ class ImageGenerator:
         if sanitized_prompt != prompt:
             LOGGER.debug("Using truncated prompt: %s", sanitized_prompt)
         LOGGER.info("Generating image for prompt: %s", sanitized_prompt)
+        negative_prompt = self.negative_prompt
         try:
             return self._generate_once(
-                sanitized_prompt, init_image, previous_output, reference_control
+                sanitized_prompt,
+                negative_prompt,
+                init_image,
+                previous_output,
+                reference_control,
             )
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
                 self._move_to_cpu()
                 try:
                     return self._generate_once(
-                        sanitized_prompt, init_image, previous_output, reference_control
+                        sanitized_prompt,
+                        negative_prompt,
+                        init_image,
+                        previous_output,
+                        reference_control,
                     )
                 except Exception as retry_exc:  # noqa: BLE001
                     LOGGER.exception(
