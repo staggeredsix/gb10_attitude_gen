@@ -172,7 +172,7 @@ BACKDROP_MOTIFS = [
 ]
 
 
-def _trim_prompt(prompt: str, max_tokens: int = 70) -> str:
+def _trim_prompt(prompt: str, max_tokens: int = 60) -> str:
     """Trim prompts to a CLIP-friendly token budget to avoid truncation warnings."""
 
     tokens = prompt.split()

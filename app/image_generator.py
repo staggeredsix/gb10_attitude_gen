@@ -308,6 +308,31 @@ class ImageGenerator:
         message = str(exc).lower()
         return "no kernel image is available" in message or "cuda error" in message
 
+    def _sanitize_prompt(self, prompt: str) -> str:
+        """Clamp prompt length to the tokenizer's maximum to avoid runtime errors."""
+
+        tokenizer = getattr(self.bundle.pipeline, "tokenizer", None)
+        if tokenizer is None:
+            return prompt
+
+        max_length = getattr(tokenizer, "model_max_length", None)
+        if not max_length or max_length <= 0:
+            return prompt
+
+        tokens = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        if len(tokens) <= max_length:
+            return prompt
+
+        LOGGER.warning(
+            "Prompt too long for tokenizer (%s tokens > %s); truncating", len(tokens), max_length
+        )
+        truncated_ids = tokens[:max_length]
+        try:
+            decoded = tokenizer.decode(truncated_ids, skip_special_tokens=True).strip()
+        except Exception:  # noqa: BLE001
+            decoded = prompt[:max_length]
+        return decoded
+
     def _generate_once(
         self,
         prompt: str,
@@ -357,17 +382,20 @@ class ImageGenerator:
             LOGGER.debug("No init image provided for generation")
             return None, reference_control
 
-        LOGGER.info("Generating image for prompt: %s", prompt)
+        sanitized_prompt = self._sanitize_prompt(prompt)
+        if sanitized_prompt != prompt:
+            LOGGER.debug("Using truncated prompt: %s", sanitized_prompt)
+        LOGGER.info("Generating image for prompt: %s", sanitized_prompt)
         try:
             return self._generate_once(
-                prompt, init_image, previous_output, reference_control
+                sanitized_prompt, init_image, previous_output, reference_control
             )
         except RuntimeError as exc:
             if self._should_fallback_to_cpu(exc):
                 self._move_to_cpu()
                 try:
                     return self._generate_once(
-                        prompt, init_image, previous_output, reference_control
+                        sanitized_prompt, init_image, previous_output, reference_control
                     )
                 except Exception as retry_exc:  # noqa: BLE001
                     LOGGER.exception(
