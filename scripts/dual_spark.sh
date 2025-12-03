@@ -17,6 +17,7 @@ Environment variables:
   PORT              Primary web UI port (default: 8000)
   REMOTE_DIR        Repository location on the secondary Spark (default: /opt/ai-mood-mirror)
   BASE_PORT         Base port for diffusion workers on the secondary Spark (default: 9000)
+  SECOND_SPARK_USE_SUDO  Whether to run remote commands with sudo (default: true)
 USAGE
 }
 
@@ -57,6 +58,7 @@ IMAGE_TAG="${IMAGE_TAG:-ai-mood-mirror:latest}"
 PRIMARY_PORT="${PORT:-8000}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/ai-mood-mirror}"
 BASE_PORT="${BASE_PORT:-9000}"
+USE_REMOTE_SUDO="${SECOND_SPARK_USE_SUDO:-true}"
 
 require() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -89,11 +91,26 @@ ssh_wrap() {
 rsync_wrap() {
   local ssh_cmd
   ssh_cmd="ssh ${SSH_OPTS}"
-  if [[ -n "${SECOND_SPARK_PASSWORD}" ]]; then
-    SSHPASS="${SECOND_SPARK_PASSWORD}" sshpass -e rsync -e "${ssh_cmd}" "$@"
-  else
-    rsync -e "${ssh_cmd}" "$@"
+  local rsync_opts=()
+  if [[ "${USE_REMOTE_SUDO}" == "true" ]]; then
+    rsync_opts+=(--rsync-path="sudo rsync")
   fi
+  if [[ -n "${SECOND_SPARK_PASSWORD}" ]]; then
+    SSHPASS="${SECOND_SPARK_PASSWORD}" sshpass -e rsync "${rsync_opts[@]}" -e "${ssh_cmd}" "$@"
+  else
+    rsync "${rsync_opts[@]}" -e "${ssh_cmd}" "$@"
+  fi
+}
+
+remote_shell() {
+  local host="$1"
+  local command="$2"
+  local use_sudo="${3:-${USE_REMOTE_SUDO}}"
+  local runner="bash -lc"
+  if [[ "${use_sudo}" == "true" ]]; then
+    runner="sudo -H bash -lc"
+  fi
+  ssh_wrap "${SSH_USER}@${host}" "${runner} \"${command}\""
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -109,23 +126,23 @@ check_ssh() {
 
 check_remote_tools() {
   echo "[info] Verifying git + docker on secondary Spark"
-  ssh_wrap "${SSH_USER}@${SECOND_SPARK_IP}" "command -v git >/dev/null && command -v docker >/dev/null"
+  remote_shell "${SECOND_SPARK_IP}" "command -v git >/dev/null && command -v docker >/dev/null"
 }
 
 sync_remote_repo() {
   echo "[info] Syncing repository to ${SSH_USER}@${SECOND_SPARK_IP}:${REMOTE_DIR}"
-  ssh_wrap "${SSH_USER}@${SECOND_SPARK_IP}" "set -euo pipefail; \
+  remote_shell "${SECOND_SPARK_IP}" "set -euo pipefail; \
     if [[ ! -d '${REMOTE_DIR}' ]]; then git clone '${ORIGIN_URL}' '${REMOTE_DIR}'; fi; \
     cd '${REMOTE_DIR}'; \
     git fetch origin; \
     git checkout '${CURRENT_BRANCH}'; \
-    git reset --hard '${CURRENT_COMMIT}'"
+    git reset --hard '${CURRENT_COMMIT}'" false
 }
 
 sync_models() {
   if [[ ! -d "${REPO_ROOT}/models" ]]; then
     echo "[warn] No local ./models directory found; secondary diffusion workers will download models as needed"
-    ssh_wrap "${SSH_USER}@${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}/models'"
+    remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}/models'"
     return
   fi
 
@@ -135,9 +152,9 @@ sync_models() {
 
 start_remote_workers() {
   echo "[info] Building image on secondary Spark (${SECOND_SPARK_IP})"
-  ssh_wrap "${SSH_USER}@${SECOND_SPARK_IP}" "cd '${REMOTE_DIR}' && DOCKER_BUILDKIT=1 docker build -t '${IMAGE_TAG}' ."
+  remote_shell "${SECOND_SPARK_IP}" "cd '${REMOTE_DIR}' && DOCKER_BUILDKIT=1 docker build -t '${IMAGE_TAG}' ."
   echo "[info] Starting diffusion workers on secondary Spark"
-  ssh_wrap "${SSH_USER}@${SECOND_SPARK_IP}" "set -euo pipefail; \
+  remote_shell "${SECOND_SPARK_IP}" "set -euo pipefail; \
     cd '${REMOTE_DIR}'; \
     NUM_GPUS=\$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l); \
     if [[ \${NUM_GPUS} -eq 0 ]]; then echo '[error] No GPUs detected on secondary Spark' >&2; exit 1; fi; \
