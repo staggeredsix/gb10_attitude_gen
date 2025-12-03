@@ -188,22 +188,20 @@ start_remote_workers() {
   echo "[info] Starting diffusion workers on secondary Spark"
   remote_shell "${SECOND_SPARK_IP}" "set -euo pipefail; \
     cd '${REMOTE_DIR}'; \
-    NUM_GPUS=\$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l); \
-    if [[ \${NUM_GPUS} -eq 0 ]]; then echo '[error] No GPUs detected on secondary Spark' >&2; exit 1; fi; \
-    for i in \$(seq 0 $((NUM_GPUS - 1))); do \
-      PORT=$(( ${BASE_PORT} + i )); \
-      NAME=flux-worker-\${i}; \
-      docker rm -f \"\${NAME}\" >/dev/null 2>&1 || true; \
-      docker run -d --gpus \"device=\${i}\" --name \"\${NAME}\" \
-        -e ROLE=diffusion \
-        -e CLUSTER_MODE=single \
-        -e AI_MOOD_MIRROR_DIFFUSION_DEVICE=\"cuda:\${i}\" \
-        -e PORT=\"\${PORT}\" \
-        -p \"\${PORT}:9000\" \
-        -v '${REMOTE_DIR}/models:/models' \
-        '${IMAGE_TAG}' \
-        ai-mood-mirror-diffusion --host 0.0.0.0 --port 9000; \
-    done"
+    NUM_GPUS=\$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l); \
+    if [[ -z \${NUM_GPUS} || \${NUM_GPUS} -eq 0 ]]; then echo '[error] No GPUs detected on secondary Spark' >&2; exit 1; fi; \
+    PORT=${BASE_PORT}; \
+    NAME=flux-worker-0; \
+    docker rm -f \"\${NAME}\" >/dev/null 2>&1 || true; \
+    docker run -d --gpus all --name \"\${NAME}\" \
+      -e ROLE=diffusion \
+      -e CLUSTER_MODE=single \
+      -e AI_MOOD_MIRROR_DIFFUSION_DEVICE=cuda:0 \
+      -e PORT=\"\${PORT}\" \
+      -p \"\${PORT}:9000\" \
+      -v '${REMOTE_DIR}/models:/models' \
+      '${IMAGE_TAG}' \
+      ai-mood-mirror-diffusion --host 0.0.0.0 --port 9000"
 }
 
 launch_primary() {
