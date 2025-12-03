@@ -11,6 +11,7 @@ Prompts:
   SECOND_SPARK_IP   IPv4 address of the secondary Spark node
   ssh_user          SSH username (defaults to $SECOND_SPARK_SSH_USER or "ubuntu")
   ssh_password      SSH password (leave blank to rely on existing SSH keys/agent)
+  sudo_password     Sudo password for remote commands (leave blank to reuse SSH password or rely on passwordless sudo)
 
 Environment variables:
   IMAGE_TAG         Docker image tag to build/run (default: ai-mood-mirror:latest)
@@ -18,6 +19,7 @@ Environment variables:
   REMOTE_DIR        Repository location on the secondary Spark (default: /opt/ai-mood-mirror)
   BASE_PORT         Base port for diffusion workers on the secondary Spark (default: 9000)
   SECOND_SPARK_USE_SUDO  Whether to run remote commands with sudo (default: true)
+  SECOND_SPARK_SUDO_PASSWORD  Password to feed to sudo on the remote host (defaults to SSH password if provided)
 USAGE
 }
 
@@ -50,15 +52,22 @@ prompt_for_secret() {
 }
 
 DEFAULT_SECOND_SPARK_IP="${1:-}"
+USE_REMOTE_SUDO="${SECOND_SPARK_USE_SUDO:-true}"
 
 SECOND_SPARK_IP="$(prompt_for_value "Enter secondary Spark IP" "${DEFAULT_SECOND_SPARK_IP}")"
 SSH_USER="$(prompt_for_value "Enter SSH username" "${SECOND_SPARK_SSH_USER:-ubuntu}")"
 SECOND_SPARK_PASSWORD="$(prompt_for_secret "Enter SSH password")"
+SECOND_SPARK_SUDO_PASSWORD="${SECOND_SPARK_SUDO_PASSWORD:-}"
+if [[ "${USE_REMOTE_SUDO}" == "true" && -z "${SECOND_SPARK_SUDO_PASSWORD}" ]]; then
+  SECOND_SPARK_SUDO_PASSWORD="$(prompt_for_secret "Enter sudo password (leave blank to reuse SSH password or passwordless sudo)")"
+  if [[ -z "${SECOND_SPARK_SUDO_PASSWORD}" ]]; then
+    SECOND_SPARK_SUDO_PASSWORD="${SECOND_SPARK_PASSWORD}"
+  fi
+fi
 IMAGE_TAG="${IMAGE_TAG:-ai-mood-mirror:latest}"
 PRIMARY_PORT="${PORT:-8000}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/ai-mood-mirror}"
 BASE_PORT="${BASE_PORT:-9000}"
-USE_REMOTE_SUDO="${SECOND_SPARK_USE_SUDO:-true}"
 
 require() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -91,14 +100,10 @@ ssh_wrap() {
 rsync_wrap() {
   local ssh_cmd
   ssh_cmd="ssh ${SSH_OPTS}"
-  local rsync_opts=()
-  if [[ "${USE_REMOTE_SUDO}" == "true" ]]; then
-    rsync_opts+=(--rsync-path="sudo rsync")
-  fi
   if [[ -n "${SECOND_SPARK_PASSWORD}" ]]; then
-    SSHPASS="${SECOND_SPARK_PASSWORD}" sshpass -e rsync "${rsync_opts[@]}" -e "${ssh_cmd}" "$@"
+    SSHPASS="${SECOND_SPARK_PASSWORD}" sshpass -e rsync -e "${ssh_cmd}" "$@"
   else
-    rsync "${rsync_opts[@]}" -e "${ssh_cmd}" "$@"
+    rsync -e "${ssh_cmd}" "$@"
   fi
 }
 
@@ -108,9 +113,22 @@ remote_shell() {
   local use_sudo="${3:-${USE_REMOTE_SUDO}}"
   local runner="bash -lc"
   if [[ "${use_sudo}" == "true" ]]; then
-    runner="sudo -H bash -lc"
+    if [[ -n "${SECOND_SPARK_SUDO_PASSWORD}" ]]; then
+      runner="printf '%s\\n' \"${SECOND_SPARK_SUDO_PASSWORD}\" | sudo -S -p '' -H bash -lc"
+    else
+      runner="sudo -H bash -lc"
+    fi
   fi
   ssh_wrap "${SSH_USER}@${host}" "${runner} \"${command}\""
+}
+
+prepare_remote_dir() {
+  echo "[info] Ensuring ${REMOTE_DIR} exists and is writable by ${SSH_USER}"
+  if [[ "${USE_REMOTE_SUDO}" == "true" ]]; then
+    remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}' && chown ${SSH_USER}:${SSH_USER} '${REMOTE_DIR}'"
+  else
+    remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}' && [[ -w '${REMOTE_DIR}' ]]"
+  fi
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -187,6 +205,9 @@ check_ssh "${SECOND_SPARK_IP}"
 
 echo "[step] Verifying remote tooling"
 check_remote_tools
+
+echo "[step] Preparing remote directory"
+prepare_remote_dir
 
 echo "[step] Syncing repository to secondary Spark"
 sync_remote_repo
