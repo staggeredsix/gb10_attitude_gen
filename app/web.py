@@ -43,6 +43,7 @@ class SessionState:
         default_factory=lambda: MoodStyleController(transition_seconds=10.0)
     )
     identity_frame: Optional[np.ndarray] = None
+    use_trt_llm: bool = False
 
 
 class InferencePipeline:
@@ -194,7 +195,7 @@ def _prepare_tls(config: AppConfig) -> tuple[Optional[str], Optional[str]]:
     return cert_pair
 
 
-def _build_html(default_mode: str) -> str:
+def _build_html(default_mode: str, use_trt_llm: bool) -> str:
     default_mode_label = "Dual node" if default_mode == "dual" else "Single node"
     template = """
     <!doctype html>
@@ -434,6 +435,12 @@ def _build_html(default_mode: str) -> str:
                 font-weight: 700;
                 font-size: 18px;
             }
+
+            .hint {
+                margin: 0;
+                color: var(--muted);
+                font-size: 13px;
+            }
         </style>
     </head>
     <body>
@@ -459,6 +466,12 @@ def _build_html(default_mode: str) -> str:
                                 <option value="single">Single node</option>
                                 <option value="dual">Dual node</option>
                             </select>
+                        </div>
+                        <div class="field">
+                            <label class="switch" for="use-trt-llm">
+                                <input type="checkbox" id="use-trt-llm" /> Enable TRT-LLM
+                            </label>
+                            <p class="hint">Run supported models through TensorRT-LLM when available.</p>
                         </div>
                         <button id="send" disabled>Send to AI</button>
                     </div>
@@ -509,10 +522,13 @@ def _build_html(default_mode: str) -> str:
             const modeLabel = document.getElementById('mode-label');
             const emotionLabel = document.getElementById('emotion-label');
             const latencyLabel = document.getElementById('latency-label');
+            const trtLlmToggle = document.getElementById('use-trt-llm');
 
             const defaultMode = '{default_mode_value}';
             modeSelect.value = defaultMode;
             let inferenceMode = defaultMode;
+            let useTrtLlm = {use_trt_llm_default};
+            trtLlmToggle.checked = useTrtLlm;
 
             let socket;
             let ready = false;
@@ -552,7 +568,7 @@ def _build_html(default_mode: str) -> str:
                     setStatus('No frame available to send', false);
                     return;
                 }
-                socket.send(JSON.stringify({ frame: dataUrl, mode: inferenceMode }));
+                socket.send(JSON.stringify({ frame: dataUrl, mode: inferenceMode, use_trt_llm: useTrtLlm }));
             }
 
             async function startWebcam() {
@@ -624,7 +640,9 @@ def _build_html(default_mode: str) -> str:
                 socket.onmessage = (event) => {
                     const payload = JSON.parse(event.data);
                     if (payload.status === 'models_ready') {
-                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}, ControlNet: ${payload.controlnet_model}.`);
+                        useTrtLlm = Boolean(payload.use_trt_llm);
+                        trtLlmToggle.checked = useTrtLlm;
+                        setStatus(`Models ready on ${payload.device}. Emotion: ${payload.emotion_model}, Diffusion: ${payload.diffusion_model}, ControlNet: ${payload.controlnet_model}.${payload.use_trt_llm ? ' TRT-LLM is enabled.' : ''}`);
                         return;
                     }
 
@@ -632,6 +650,10 @@ def _build_html(default_mode: str) -> str:
                         inferenceMode = payload.mode;
                         modeSelect.value = payload.mode;
                         modeLabel.textContent = payload.mode === 'dual' ? 'Dual node' : 'Single node';
+                    }
+                    if (payload.use_trt_llm !== undefined) {
+                        useTrtLlm = Boolean(payload.use_trt_llm);
+                        trtLlmToggle.checked = useTrtLlm;
                     }
                     if (payload.emotion) {
                         emotionLabel.textContent = payload.emotion;
@@ -690,14 +712,22 @@ def _build_html(default_mode: str) -> str:
                 modeLabel.textContent = inferenceMode === 'dual' ? 'Dual node' : 'Single node';
             });
 
+            trtLlmToggle.addEventListener('change', (event) => {
+                useTrtLlm = Boolean(event.target.checked);
+                const suffix = useTrtLlm ? 'TRT-LLM enabled.' : 'TRT-LLM disabled.';
+                setStatus(`Preference updated. ${suffix}`);
+            });
+
             window.addEventListener('beforeunload', stopWebcam);
             openSocket();
         </script>
     </body>
     </html>
     """
-    return template.replace("{default_mode_value}", default_mode).replace(
-        "{default_mode_label}", default_mode_label
+    return (
+        template.replace("{default_mode_value}", default_mode)
+        .replace("{default_mode_label}", default_mode_label)
+        .replace("{use_trt_llm_default}", "true" if use_trt_llm else "false")
     )
 
 
@@ -713,12 +743,15 @@ def create_app(config: AppConfig) -> FastAPI:
     async def index() -> HTMLResponse:  # noqa: D401
         """Serve the basic HTML UI."""
 
-        return HTMLResponse(content=_build_html(config.default_mode), media_type="text/html")
+        return HTMLResponse(
+            content=_build_html(config.default_mode, config.use_trt_llm),
+            media_type="text/html",
+        )
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
-        state = SessionState(mode=config.default_mode)
+        state = SessionState(mode=config.default_mode, use_trt_llm=config.use_trt_llm)
         LOGGER.info("Client connected")
         await websocket.send_json(
             {
@@ -727,6 +760,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 "controlnet_model": config.controlnet_model,
                 "emotion_model": config.emotion_model,
                 "device": config.device,
+                "use_trt_llm": config.use_trt_llm,
             }
         )
         try:
@@ -734,6 +768,8 @@ def create_app(config: AppConfig) -> FastAPI:
                 data = await websocket.receive_json()
                 frame_data = data.get("frame")
                 mode = data.get("mode") or state.mode
+                if "use_trt_llm" in data:
+                    state.use_trt_llm = bool(data.get("use_trt_llm", state.use_trt_llm))
                 if not frame_data:
                     continue
 
@@ -747,6 +783,7 @@ def create_app(config: AppConfig) -> FastAPI:
                 )
                 response: dict[str, Optional[str]] = {
                     "mode": state.mode,
+                    "use_trt_llm": state.use_trt_llm,
                 }
                 if emotion is not None:
                     response["emotion"] = emotion
