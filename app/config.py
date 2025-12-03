@@ -42,6 +42,7 @@ class AppConfig:
     enable_https: bool = True
     ssl_certfile: Optional[str] = None
     ssl_keyfile: Optional[str] = None
+    use_trt_llm: bool = False
 
     @property
     def device(self) -> str:
@@ -117,7 +118,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--ssl-certfile", type=str, help="Path to an SSL certificate file")
     parser.add_argument("--ssl-keyfile", type=str, help="Path to an SSL private key file")
-    parser.set_defaults(use_cuda=None, show_windows=True, enable_https=None)
+    parser.add_argument(
+        "--use-trt-llm",
+        dest="use_trt_llm",
+        action="store_true",
+        help="Enable TensorRT-LLM for model execution when available",
+    )
+    parser.add_argument(
+        "--no-trt-llm",
+        dest="use_trt_llm",
+        action="store_false",
+        help="Disable TensorRT-LLM integration",
+    )
+    parser.set_defaults(use_cuda=None, show_windows=True, enable_https=None, use_trt_llm=None)
     return parser.parse_args(argv)
 
 
@@ -166,6 +179,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     env_enable_https = _bool_env(f"{ENV_PREFIX}ENABLE_HTTPS", True)
     env_ssl_certfile = os.getenv(f"{ENV_PREFIX}SSL_CERTFILE")
     env_ssl_keyfile = os.getenv(f"{ENV_PREFIX}SSL_KEYFILE")
+    env_use_trt_llm = _bool_env(f"{ENV_PREFIX}USE_TRT_LLM", False)
     role_hint = os.getenv("ROLE")
 
     camera_index = args.camera_index if args.camera_index is not None else int(env_camera) if env_camera else 0
@@ -211,6 +225,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
     enable_https = env_enable_https if args.enable_https is None else args.enable_https
     ssl_certfile = args.ssl_certfile if args.ssl_certfile else env_ssl_certfile
     ssl_keyfile = args.ssl_keyfile if args.ssl_keyfile else env_ssl_keyfile
+    use_trt_llm = env_use_trt_llm if args.use_trt_llm is None else args.use_trt_llm
 
     return AppConfig(
         camera_index=camera_index,
@@ -229,6 +244,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         enable_https=enable_https,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        use_trt_llm=use_trt_llm,
     )
 
 
