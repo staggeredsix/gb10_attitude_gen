@@ -105,8 +105,9 @@ rsync_wrap() {
 remote_shell() {
   local host="$1"
   local command="$2"
+  local use_sudo="${3:-${USE_REMOTE_SUDO}}"
   local runner="bash -lc"
-  if [[ "${USE_REMOTE_SUDO}" == "true" ]]; then
+  if [[ "${use_sudo}" == "true" ]]; then
     runner="sudo -H bash -lc"
   fi
   ssh_wrap "${SSH_USER}@${host}" "${runner} \"${command}\""
@@ -135,7 +136,7 @@ sync_remote_repo() {
     cd '${REMOTE_DIR}'; \
     git fetch origin; \
     git checkout '${CURRENT_BRANCH}'; \
-    git reset --hard '${CURRENT_COMMIT}'"
+    git reset --hard '${CURRENT_COMMIT}'" false
 }
 
 sync_models() {
