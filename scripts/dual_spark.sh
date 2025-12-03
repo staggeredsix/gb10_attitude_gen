@@ -20,6 +20,8 @@ Environment variables:
   BASE_PORT         Base port for diffusion workers on the secondary Spark (default: 9000)
   SECOND_SPARK_USE_SUDO  Whether to run remote commands with sudo (default: true)
   SECOND_SPARK_SUDO_PASSWORD  Password to feed to sudo on the remote host (defaults to SSH password if provided)
+  REPO_URL          Repository URL to clone on the secondary Spark (default: https://github.com/google/ai-mood-mirror.git)
+  TARGET_REF        Branch or tag to deploy on the secondary Spark (default: main, or the current branch if running inside a git repo)
 USAGE
 }
 
@@ -132,9 +134,21 @@ prepare_remote_dir() {
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ORIGIN_URL="$(git -C "${REPO_ROOT}" config --get remote.origin.url)"
-CURRENT_BRANCH="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
-CURRENT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+REPO_URL="${REPO_URL:-}"
+TARGET_REF="${TARGET_REF:-}"
+
+if [[ -z "${REPO_URL}" ]] && git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  REPO_URL="$(git -C "${REPO_ROOT}" config --get remote.origin.url || true)"
+  TARGET_REF="${TARGET_REF:-$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)}"
+fi
+
+REPO_URL="${REPO_URL:-https://github.com/google/ai-mood-mirror.git}"
+TARGET_REF="${TARGET_REF:-main}"
+
+if [[ -z "${REPO_URL}" ]]; then
+  echo "[error] Unable to determine repository URL. Set REPO_URL explicitly." >&2
+  exit 1
+fi
 
 check_ssh() {
   local host="$1"
@@ -150,11 +164,11 @@ check_remote_tools() {
 sync_remote_repo() {
   echo "[info] Syncing repository to ${SSH_USER}@${SECOND_SPARK_IP}:${REMOTE_DIR}"
   remote_shell "${SECOND_SPARK_IP}" "set -euo pipefail; \
-    if [[ ! -d '${REMOTE_DIR}' ]]; then git clone '${ORIGIN_URL}' '${REMOTE_DIR}'; fi; \
+    if [[ ! -d '${REMOTE_DIR}/.git' ]]; then git clone --branch '${TARGET_REF}' '${REPO_URL}' '${REMOTE_DIR}'; fi; \
     cd '${REMOTE_DIR}'; \
-    git fetch origin; \
-    git checkout '${CURRENT_BRANCH}'; \
-    git reset --hard '${CURRENT_COMMIT}'" false
+    git fetch origin '${TARGET_REF}'; \
+    git checkout '${TARGET_REF}'; \
+    git reset --hard \"origin/${TARGET_REF}\"" false
 }
 
 sync_models() {
