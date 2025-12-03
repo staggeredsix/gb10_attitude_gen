@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -141,9 +141,11 @@ class ClusterMode(str, Enum):
 
 @dataclass
 class ClusterConfig:
-    mode: ClusterMode
-    second_spark_ip: Optional[str]
-    second_spark_ssh_user: str
+    mode: ClusterMode = field(
+        default_factory=lambda: ClusterMode(os.getenv("CLUSTER_MODE", ClusterMode.SINGLE.value))
+    )
+    second_spark_ip: Optional[str] = field(default_factory=lambda: os.getenv("SECOND_SPARK_IP"))
+    second_spark_ssh_user: str = field(default_factory=lambda: os.getenv("SECOND_SPARK_SSH_USER", "ubuntu"))
 
     def validate(self) -> None:
         if self.mode == ClusterMode.DUAL and not self.second_spark_ip:
@@ -254,4 +256,11 @@ def load_cluster_config() -> ClusterConfig:
     return ClusterConfig.from_env()
 
 
-__all__ = ["AppConfig", "parse_args", "load_config"]
+__all__ = [
+    "AppConfig",
+    "ClusterConfig",
+    "ClusterMode",
+    "parse_args",
+    "load_config",
+    "load_cluster_config",
+]
