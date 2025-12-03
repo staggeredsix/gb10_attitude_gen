@@ -179,7 +179,7 @@ sync_models() {
   fi
 
   echo "[info] Syncing models cache to secondary Spark"
-  rsync_wrap -az --delete "${REPO_ROOT}/models/" "${SSH_USER}@${SECOND_SPARK_IP}:${REMOTE_DIR}/models/"
+  rsync_wrap -az --info=progress2 --human-readable --delete "${REPO_ROOT}/models/" "${SSH_USER}@${SECOND_SPARK_IP}:${REMOTE_DIR}/models/"
 }
 
 start_remote_workers() {
