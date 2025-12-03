@@ -124,7 +124,11 @@ remote_shell() {
 
 prepare_remote_dir() {
   echo "[info] Ensuring ${REMOTE_DIR} exists and is writable by ${SSH_USER}"
-  remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}' && chown ${SSH_USER}:${SSH_USER} '${REMOTE_DIR}'"
+  if [[ "${USE_REMOTE_SUDO}" == "true" ]]; then
+    remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}' && chown ${SSH_USER}:${SSH_USER} '${REMOTE_DIR}'"
+  else
+    remote_shell "${SECOND_SPARK_IP}" "mkdir -p '${REMOTE_DIR}' && [[ -w '${REMOTE_DIR}' ]]"
+  fi
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
