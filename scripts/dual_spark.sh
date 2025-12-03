@@ -190,7 +190,7 @@ start_remote_workers() {
     cd '${REMOTE_DIR}'; \
     NUM_GPUS=\$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l); \
     if [[ \${NUM_GPUS} -eq 0 ]]; then echo '[error] No GPUs detected on secondary Spark' >&2; exit 1; fi; \
-    for i in \$(seq 0 $((NUM_GPUS - 1))); do \
+    for i in \$(seq 0 \$((NUM_GPUS - 1))); do \
       PORT=$(( ${BASE_PORT} + i )); \
       NAME=flux-worker-\${i}; \
       docker rm -f \"\${NAME}\" >/dev/null 2>&1 || true; \
