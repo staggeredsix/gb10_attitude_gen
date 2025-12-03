@@ -21,6 +21,17 @@ class ClusterConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cfg.validate()
 
+    def test_dataclass_defaults_load_from_env(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CLUSTER_MODE": "dual", "SECOND_SPARK_IP": "10.10.0.42", "SECOND_SPARK_SSH_USER": "spark"},
+            clear=True,
+        ):
+            cfg = ClusterConfig()
+            self.assertEqual(cfg.mode, ClusterMode.DUAL)
+            self.assertEqual(cfg.second_spark_ip, "10.10.0.42")
+            self.assertEqual(cfg.second_spark_ssh_user, "spark")
+
 
 if __name__ == "__main__":
     unittest.main()
