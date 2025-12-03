@@ -3,17 +3,18 @@ set -euo pipefail
 
 usage() {
   cat <<USAGE
-Usage: $0 <SECOND_SPARK_IP> [ssh_user]
+Usage: $0
 
-Arguments:
-  SECOND_SPARK_IP   IPv4 address of the secondary Spark node
-  ssh_user          SSH username (defaults to $SECOND_SPARK_SSH_USER or "ubuntu")
+Interactive prompts will request the secondary Spark IP, SSH username, and sudo password
+immediately after launching the script. Defaults can still be provided via environment
+variables when desired.
 
 Environment variables:
-  IMAGE_TAG         Docker image tag to build/run (default: ai-mood-mirror:latest)
-  PORT              Primary web UI port (default: 8000)
-  REMOTE_DIR        Repository location on the secondary Spark (default: /opt/ai-mood-mirror)
-  BASE_PORT         Base port for diffusion workers on the secondary Spark (default: 9000)
+  SECOND_SPARK_SSH_USER  Default SSH username (fallback: "ubuntu")
+  IMAGE_TAG              Docker image tag to build/run (default: ai-mood-mirror:latest)
+  PORT                   Primary web UI port (default: 8000)
+  REMOTE_DIR             Repository location on the secondary Spark (default: /opt/ai-mood-mirror)
+  BASE_PORT              Base port for diffusion workers on the secondary Spark (default: 9000)
 USAGE
 }
 
@@ -22,17 +23,30 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ $# -lt 1 ]]; then
-  usage
+DEFAULT_SSH_USER="${SECOND_SPARK_SSH_USER:-ubuntu}"
+
+read -rp "Enter secondary Spark IP: " SECOND_SPARK_IP
+if [[ -z "${SECOND_SPARK_IP}" ]]; then
+  echo "[error] Secondary Spark IP is required" >&2
   exit 1
 fi
 
-SECOND_SPARK_IP="$1"
-SSH_USER="${2:-${SECOND_SPARK_SSH_USER:-ubuntu}}"
+read -rp "Enter SSH username [${DEFAULT_SSH_USER}]: " SSH_USER_INPUT
+SSH_USER="${SSH_USER_INPUT:-${DEFAULT_SSH_USER}}"
+
+read -rsp "Enter sudo password for ${SSH_USER} on secondary Spark (leave blank if sudo not required): " SECOND_SPARK_SUDO_PASS
+echo ""
+
 IMAGE_TAG="${IMAGE_TAG:-ai-mood-mirror:latest}"
 PRIMARY_PORT="${PORT:-8000}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/ai-mood-mirror}"
 BASE_PORT="${BASE_PORT:-9000}"
+
+if [[ -n "${SECOND_SPARK_SUDO_PASS}" ]]; then
+  REMOTE_SUDO_PREFIX="echo $(printf '%q' "${SECOND_SPARK_SUDO_PASS}") | sudo -S"
+else
+  REMOTE_SUDO_PREFIX="sudo"
+fi
 
 require() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -85,7 +99,7 @@ sync_models() {
 
 start_remote_workers() {
   echo "[info] Building image on secondary Spark (${SECOND_SPARK_IP})"
-  ssh "${SSH_USER}@${SECOND_SPARK_IP}" "cd '${REMOTE_DIR}' && DOCKER_BUILDKIT=1 docker build -t '${IMAGE_TAG}' ."
+  ssh "${SSH_USER}@${SECOND_SPARK_IP}" "cd '${REMOTE_DIR}' && ${REMOTE_SUDO_PREFIX} DOCKER_BUILDKIT=1 docker build -t '${IMAGE_TAG}' ."
   echo "[info] Starting diffusion workers on secondary Spark"
   ssh "${SSH_USER}@${SECOND_SPARK_IP}" "set -euo pipefail; \
     cd '${REMOTE_DIR}'; \
@@ -94,8 +108,8 @@ start_remote_workers() {
     for i in \$(seq 0 $((NUM_GPUS - 1))); do \
       PORT=$(( ${BASE_PORT} + i )); \
       NAME=flux-worker-\${i}; \
-      docker rm -f \"\${NAME}\" >/dev/null 2>&1 || true; \
-      docker run -d --gpus \"device=\${i}\" --name \"\${NAME}\" \
+      ${REMOTE_SUDO_PREFIX} docker rm -f \"\${NAME}\" >/dev/null 2>&1 || true; \
+      ${REMOTE_SUDO_PREFIX} docker run -d --gpus \"device=\${i}\" --name \"\${NAME}\" \
         -e ROLE=diffusion \
         -e CLUSTER_MODE=single \
         -e AI_MOOD_MIRROR_DIFFUSION_DEVICE=\"cuda:\${i}\" \
