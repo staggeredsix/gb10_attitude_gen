@@ -28,7 +28,7 @@ class AppConfig:
 
     camera_index: int = 0
     emotion_model: str = "Qwen/Qwen2-VL-2B-Instruct"
-    diffusion_model: str = "black-forest-labs/FLUX.1-dev"
+    diffusion_model: str = "black-forest-labs/FLUX.1-dev-fp4"
     controlnet_model: str = "InstantX/FLUX.1-dev-Controlnet-Union"
     face_segmentation_model: str = "briaai/RMBG-1.4"
     segmentation_min_area: float = 0.01

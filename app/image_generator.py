@@ -128,11 +128,17 @@ class ImageGenerator:
                 raise ValueError(
                     "GGUF checkpoints are not compatible with the diffusers FLUX ControlNet pipeline"
                 )
-            LOGGER.info("Loading FLUX transformer weights from %s", target_model)
+            quantization_config: str | None = "fp4" if self.device.type != "cpu" else None
+            LOGGER.info(
+                "Loading FLUX transformer weights from %s with quantization=%s",
+                target_model,
+                quantization_config or "none",
+            )
             transformer = FluxTransformer2DModel.from_pretrained(
                 target_model,
                 subfolder="transformer",
                 torch_dtype=dtype,
+                quantization_config=quantization_config,
                 trust_remote_code=True,
                 # Some FLUX community weights ship mismatched shapes; allow loading with
                 # random init for incompatible tensors to keep the app running.
