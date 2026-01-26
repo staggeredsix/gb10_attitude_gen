@@ -18,10 +18,12 @@ from pydantic import BaseModel, Field
 from PIL import Image
 
 from ltx2_backend import (
+    DEFAULT_GEMMA_ROOT,
     generate_fever_dream_frames,
     generate_mood_mirror_frames,
     log_backend_configuration,
     render_status_frame,
+    validate_gemma_root,
     warmup_pipeline,
 )
 
@@ -230,9 +232,18 @@ latest_camera_lock = threading.Lock()
 health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipelines": {}}
 
 
+def _gemma_status() -> dict[str, Any]:
+    gemma_root = os.getenv("LTX2_GEMMA_ROOT", DEFAULT_GEMMA_ROOT)
+    gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
+    return {"gemma_root": gemma_root, "gemma_ok": gemma_ok, "gemma_reason": gemma_reason}
+
+
 @app.on_event("startup")
 def _startup() -> None:
     log_backend_configuration(current_config.output_mode)
+    health_status.update(_gemma_status())
+    if not health_status.get("gemma_ok", False):
+        health_status["errors"]["gemma"] = health_status.get("gemma_reason")
     try:
         info = warmup_pipeline(current_config.output_mode)
         health_status["pipeline_loaded"] = True
@@ -258,6 +269,15 @@ async def set_config(request: Request) -> RunConfig:
     payload = await request.json()
     config = RunConfig(**payload)
     config = _validate_config(config)
+    gemma_status = _gemma_status()
+    if not gemma_status["gemma_ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Gemma is required. Set LTX2_GEMMA_ROOT to a directory created by "
+                "download_model.sh (google/gemma-3-12b)."
+            ),
+        )
     global current_config
     current_config = config
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
@@ -297,8 +317,14 @@ def mood_prompt() -> dict[str, str]:
 @app.get("/healthz")
 def healthz(deep: bool = False) -> dict[str, Any]:
     if not deep:
+        health_status.update(_gemma_status())
+        if not health_status.get("gemma_ok", False):
+            health_status["errors"]["gemma"] = health_status.get("gemma_reason")
         return health_status
     status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
+    status.update(_gemma_status())
+    if not status.get("gemma_ok", False):
+        status["errors"]["gemma"] = status.get("gemma_reason")
     try:
         info = warmup_pipeline(current_config.output_mode)
         status["pipelines"][current_config.output_mode] = info

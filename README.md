@@ -21,6 +21,21 @@ pip install -r requirements.txt
 
 **PyTorch note:** if you need a specific CUDA build, install it first from the official index, then install `requirements.txt`.
 
+## Getting Models
+
+```bash
+export HF_TOKEN=...  # required if the model requires a license
+./download_model.sh all
+```
+
+Gemma downloads into `./models/gemma` by default. When running in Docker, mount that folder and set:
+
+```bash
+export LTX2_GEMMA_ROOT=/models/gemma
+```
+
+Expected Gemma model id: `google/gemma-3-12b`.
+
 ## Run
 
 ```bash
