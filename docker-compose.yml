@@ -8,10 +8,15 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
+      LTX2_MODEL_ID: /models/LTX-2
+      LTX2_VARIANT: fp4
+      LTX2_ALLOW_DOWNLOAD: "false"
       HF_HOME: /models/huggingface
       HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
+      TRANSFORMERS_CACHE: /models/huggingface/transformers
     volumes:
       - ./models:/models
+      # - ~/.cache/huggingface:/models/huggingface
     ports:
       - "${PORT:-8000}:8000"
     deploy:
