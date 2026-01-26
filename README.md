@@ -83,17 +83,15 @@ export HUGGINGFACE_HUB_CACHE=~/.cache/huggingface/hub
 ## UI guide
 
 - **Mode selector**: choose Fever Dream or Mood Mirror.
-- **Prompt / negative prompt**: used for Fever Dream, and as the base for Mood Mirror.
+- **Prompt**: used for Fever Dream, and as the base for Mood Mirror.
 - **Resolution / FPS / Streams**: changing any value restarts all streams.
-- **Output preset**:
-  - `native`: no upscaling (default).
-  - `spatial_x2`: high quality spatial upscaler.
-  - `temporal_x2`: smoother motion via temporal upscaler.
-  - `spatial_x2_temporal_x2`: spatial upscaler then temporal upscaler (highest quality, slowest).
+- **Output mode**:
+  - `native`: one-stage output at the requested size.
+  - `upscaled`: two-stage output (stage 1 low-res, stage 2 spatial upsample + distilled LoRA).
 - **Dream strength / Motion**: coarse controls over guidance/steps and motion density.
 - **Mood Mirror**: enable the webcam, watch the live mood readout, and adjust the “retain identity” slider.
 
-## Upscaling presets & prompt length
+## Output modes & required artifacts
 
 Environment variables and request fields:
 
@@ -103,23 +101,27 @@ export LTX2_NATIVE_WIDTH=1280
 export LTX2_NATIVE_HEIGHT=736
 export LTX2_NATIVE_FPS=24
 
-# Output preset for upscaling
-export LTX2_OUTPUT_PRESET=native
+# Output mode (native or upscaled)
+export LTX2_OUTPUT_MODE=native
 
-# Force max prompt length (defaults to pipeline signature if unset)
-export LTX2_MAX_PROMPT_LEN=128
+# Required LTX-2 artifacts
+export LTX2_GEMMA_ROOT=/models/ltx2/gemma
+export LTX2_CHECKPOINT_PATH=/models/ltx2/ltx2-fp4.safetensors
+
+# Required only for upscaled mode
+export LTX2_SPATIAL_UPSAMPLER_PATH=/models/ltx2/ltx2-spatial-upsampler.safetensors
+export LTX2_DISTILLED_LORA_PATH=/models/ltx2/ltx2-distilled-lora.safetensors
+export LTX2_DISTILLED_LORA_STRENGTH=0.6
 ```
 
 When posting to `/api/config`, you can also set:
 
 ```json
 {
-  "output_preset": "spatial_x2"
+  "output_mode": "upscaled"
 }
 ```
-
-If you request an upscaler but the weights are missing, the backend logs a warning and falls back to native output
-(or raises if `LTX2_UPSCALER_REQUIRED=true`).
+Upscaled output requires width and height to be multiples of 64 (stage 1 uses half resolution).
 
 ## Troubleshooting
 

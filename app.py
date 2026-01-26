@@ -48,16 +48,15 @@ def _env_str(name: str, default: str) -> str:
 DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
 DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
 DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
-DEFAULT_OUTPUT_PRESET = _env_str("LTX2_OUTPUT_PRESET", "native")
-if DEFAULT_OUTPUT_PRESET not in {"native", "spatial_x2", "temporal_x2", "spatial_x2_temporal_x2"}:
-    LOGGER.warning("Invalid LTX2_OUTPUT_PRESET=%s; using native.", DEFAULT_OUTPUT_PRESET)
-    DEFAULT_OUTPUT_PRESET = "native"
+DEFAULT_OUTPUT_MODE = _env_str("LTX2_OUTPUT_MODE", "native")
+if DEFAULT_OUTPUT_MODE not in {"native", "upscaled"}:
+    LOGGER.warning("Invalid LTX2_OUTPUT_MODE=%s; using native.", DEFAULT_OUTPUT_MODE)
+    DEFAULT_OUTPUT_MODE = "native"
 
 
 class RunConfig(BaseModel):
     mode: Literal["fever", "mood"] = "fever"
     prompt: str = Field("surreal dreamscape, liquid light, ethereal forms", min_length=1)
-    negative_prompt: str = ""
     width: int = DEFAULT_WIDTH
     height: int = DEFAULT_HEIGHT
     fps: int = DEFAULT_FPS
@@ -67,9 +66,7 @@ class RunConfig(BaseModel):
     motion: float = 0.6
     base_prompt: str = Field("portrait, cinematic lighting", min_length=1)
     identity_strength: float = 0.7
-    output_preset: Literal["native", "spatial_x2", "temporal_x2", "spatial_x2_temporal_x2"] = (
-        DEFAULT_OUTPUT_PRESET
-    )
+    output_mode: Literal["native", "upscaled"] = DEFAULT_OUTPUT_MODE
 
 
 @dataclass
@@ -164,6 +161,11 @@ def _encode_frame(frame: Image.Image | np.ndarray) -> bytes:
 def _validate_config(config: RunConfig) -> RunConfig:
     if config.width % 32 != 0 or config.height % 32 != 0:
         raise HTTPException(status_code=400, detail="Width and height must be multiples of 32.")
+    if config.output_mode == "upscaled" and (config.width % 64 != 0 or config.height % 64 != 0):
+        raise HTTPException(
+            status_code=400,
+            detail="Upscaled output requires width and height to be multiples of 64.",
+        )
     config.streams = max(1, min(config.streams, 16))
     config.fps = max(1, min(config.fps, 60))
     config.dream_strength = float(np.clip(config.dream_strength, 0.0, 1.0))
@@ -230,14 +232,14 @@ health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipeli
 
 @app.on_event("startup")
 def _startup() -> None:
-    log_backend_configuration()
+    log_backend_configuration(current_config.output_mode)
     try:
-        info = warmup_pipeline("text")
+        info = warmup_pipeline(current_config.output_mode)
         health_status["pipeline_loaded"] = True
-        health_status["pipelines"]["text"] = info
+        health_status["pipelines"][current_config.output_mode] = info
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("LTX-2 warmup failed: %s", exc)
-        health_status["errors"]["text"] = str(exc)
+        health_status["errors"][current_config.output_mode] = str(exc)
     stream_manager.restart(current_config, _get_latest_camera_state)
 
 
@@ -258,6 +260,7 @@ async def set_config(request: Request) -> RunConfig:
     config = _validate_config(config)
     global current_config
     current_config = config
+    LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
     stream_manager.restart(current_config, _get_latest_camera_state)
     return current_config
 
@@ -296,14 +299,13 @@ def healthz(deep: bool = False) -> dict[str, Any]:
     if not deep:
         return health_status
     status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
-    for mode in ("text", "image"):
-        try:
-            info = warmup_pipeline(mode)
-            status["pipelines"][mode] = info
-            status["pipeline_loaded"] = True
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Health check warmup failed for %s: %s", mode, exc)
-            status["errors"][mode] = str(exc)
+    try:
+        info = warmup_pipeline(current_config.output_mode)
+        status["pipelines"][current_config.output_mode] = info
+        status["pipeline_loaded"] = True
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Health check warmup failed for %s: %s", current_config.output_mode, exc)
+        status["errors"][current_config.output_mode] = str(exc)
     return status
 
 

@@ -106,9 +106,6 @@
         <label for="prompt">Prompt</label>
         <textarea id="prompt"></textarea>
 
-        <label for="negativePrompt">Negative prompt</label>
-        <textarea id="negativePrompt"></textarea>
-
         <label for="resolution">Resolution</label>
         <select id="resolution">
           <option value="1280x736">1280 × 736 (near 720p)</option>
@@ -118,12 +115,10 @@
           <option value="custom">Custom</option>
         </select>
 
-        <label for="outputPreset">Output preset</label>
-        <select id="outputPreset">
-          <option value="native">Native (no upscaling)</option>
-          <option value="spatial_x2">High quality (spatial ×2)</option>
-          <option value="temporal_x2">Smooth motion (temporal ×2)</option>
-          <option value="spatial_x2_temporal_x2">Ultra (spatial ×2 + temporal ×2)</option>
+        <label for="outputMode">Output mode</label>
+        <select id="outputMode">
+          <option value="native">Native (one-stage output)</option>
+          <option value="upscaled">Upscaled (two-stage refinement)</option>
         </select>
 
         <div class="row">
@@ -184,9 +179,8 @@
     <script>
       const modeSelect = document.getElementById("mode");
       const promptInput = document.getElementById("prompt");
-      const negativePromptInput = document.getElementById("negativePrompt");
       const resolutionSelect = document.getElementById("resolution");
-      const outputPresetSelect = document.getElementById("outputPreset");
+      const outputModeSelect = document.getElementById("outputMode");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
       const fpsInput = document.getElementById("fps");
@@ -220,12 +214,11 @@
         return {
           mode: modeSelect.value,
           prompt: promptInput.value.trim(),
-          negative_prompt: negativePromptInput.value.trim(),
           width: parseInt(widthInput.value, 10),
           height: parseInt(heightInput.value, 10),
           fps: parseInt(fpsInput.value, 10),
           streams: parseInt(streamsInput.value, 10),
-          output_preset: outputPresetSelect.value,
+          output_mode: outputModeSelect.value,
           seed: seedInput.value ? parseInt(seedInput.value, 10) : null,
           dream_strength: parseFloat(dreamStrengthInput.value),
           motion: parseFloat(motionInput.value),
@@ -269,13 +262,12 @@
         const config = await response.json();
         modeSelect.value = config.mode;
         promptInput.value = config.prompt;
-        negativePromptInput.value = config.negative_prompt || "";
         widthInput.value = config.width;
         heightInput.value = config.height;
         const presetValue = `${config.width}x${config.height}`;
         const hasPreset = Array.from(resolutionSelect.options).some((opt) => opt.value === presetValue);
         resolutionSelect.value = hasPreset ? presetValue : "custom";
-        outputPresetSelect.value = config.output_preset || "native";
+        outputModeSelect.value = config.output_mode || "native";
         fpsInput.value = config.fps;
         streamsInput.value = config.streams;
         seedInput.value = config.seed ?? "";
