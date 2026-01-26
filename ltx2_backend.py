@@ -24,6 +24,9 @@ LOGGER = logging.getLogger("ltx2_backend")
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
 
+DEFAULT_GEMMA_MODEL_ID = "google/gemma-3-12b"
+DEFAULT_GEMMA_ROOT = "/models/gemma"
+
 
 @dataclass(frozen=True)
 class LTX2Artifacts:
@@ -43,6 +46,26 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         LOGGER.warning("Invalid float for %s=%s; using %s", name, value, default)
         return default
+
+
+def validate_gemma_root(path: str) -> tuple[bool, str]:
+    if not path:
+        return False, "LTX2_GEMMA_ROOT is not set."
+    root = pathlib.Path(path).expanduser()
+    if not root.exists():
+        return False, f"Gemma root does not exist: {root}"
+    config_path = root / "config.json"
+    if not config_path.is_file():
+        return False, f"Missing config.json under: {root}"
+    tokenizer_candidates = [
+        root / "tokenizer.json",
+        root / "tokenizer.model",
+        root / "tokenizer_config.json",
+    ]
+    if not any(candidate.is_file() for candidate in tokenizer_candidates):
+        if not any(candidate.is_file() for candidate in root.glob("tokenizer.*")):
+            return False, f"Missing tokenizer files under: {root}"
+    return True, "ok"
 
 
 def _resolve_checkpoint_path() -> str:
@@ -90,9 +113,19 @@ def _require_env_path(name: str, *, required: bool = True) -> str | None:
     return str(path)
 
 
-def _resolve_artifacts(output_mode: str) -> LTX2Artifacts:
+def _resolve_gemma_root() -> str:
+    return os.getenv("LTX2_GEMMA_ROOT", DEFAULT_GEMMA_ROOT)
+
+
+def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2Artifacts:
     checkpoint_path = _resolve_checkpoint_path()
-    gemma_root = _require_env_path("LTX2_GEMMA_ROOT", required=True)
+    gemma_root = _resolve_gemma_root()
+    gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
+    if require_gemma and not gemma_ok:
+        raise RuntimeError(
+            "Gemma is required. Set LTX2_GEMMA_ROOT to a directory created by "
+            f"download_model.sh ({DEFAULT_GEMMA_MODEL_ID}). ({gemma_reason})"
+        )
     spatial_upsampler_path = _require_env_path("LTX2_SPATIAL_UPSAMPLER_PATH", required=output_mode == "upscaled")
     distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=output_mode == "upscaled")
     distilled_lora_strength = _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6)
@@ -108,13 +141,26 @@ def _resolve_artifacts(output_mode: str) -> LTX2Artifacts:
 
 def log_backend_configuration(output_mode: str | None = None) -> None:
     resolved_output_mode = output_mode or os.getenv("LTX2_OUTPUT_MODE", "native")
-    artifacts = _resolve_artifacts(resolved_output_mode)
     LOGGER.info("LTX-2 output_mode=%s", resolved_output_mode)
-    LOGGER.info("LTX-2 checkpoint_path=%s", artifacts.checkpoint_path)
-    LOGGER.info("LTX-2 gemma_root=%s", artifacts.gemma_root)
-    LOGGER.info("LTX-2 spatial_upsampler_path=%s", artifacts.spatial_upsampler_path)
-    LOGGER.info("LTX-2 distilled_lora_path=%s", artifacts.distilled_lora_path)
-    LOGGER.info("LTX-2 distilled_lora_strength=%s", artifacts.distilled_lora_strength)
+    try:
+        checkpoint_path = _resolve_checkpoint_path()
+        LOGGER.info("LTX-2 checkpoint_path=%s", checkpoint_path)
+    except RuntimeError as exc:
+        LOGGER.warning("LTX-2 checkpoint resolution failed: %s", exc)
+    gemma_root = _resolve_gemma_root()
+    gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
+    LOGGER.info("LTX-2 gemma_root=%s", gemma_root)
+    LOGGER.info("LTX-2 gemma_model_id=%s", DEFAULT_GEMMA_MODEL_ID)
+    if not gemma_ok:
+        LOGGER.warning(
+            "Gemma is required for LTX-2 pipelines. Set LTX2_GEMMA_ROOT to the Gemma "
+            "directory created by download_model.sh. (%s)",
+            gemma_reason,
+        )
+    if resolved_output_mode == "upscaled":
+        LOGGER.info("LTX-2 spatial_upsampler_path=%s", os.getenv("LTX2_SPATIAL_UPSAMPLER_PATH"))
+        LOGGER.info("LTX-2 distilled_lora_path=%s", os.getenv("LTX2_DISTILLED_LORA_PATH"))
+        LOGGER.info("LTX-2 distilled_lora_strength=%s", _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6))
 
 
 def _filter_kwargs_for_callable(func: Callable[..., object], kwargs: dict[str, object]) -> dict[str, object]:
