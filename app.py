@@ -20,7 +20,9 @@ from PIL import Image
 from ltx2_backend import (
     generate_fever_dream_frames,
     generate_mood_mirror_frames,
+    log_backend_configuration,
     render_status_frame,
+    warmup_pipeline,
 )
 
 LOGGER = logging.getLogger("ltx2_app")
@@ -195,10 +197,19 @@ current_config = RunConfig()
 latest_camera_frame: np.ndarray | None = None
 latest_mood: dict[str, Any] | None = None
 latest_camera_lock = threading.Lock()
+health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipelines": {}}
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    log_backend_configuration()
+    try:
+        info = warmup_pipeline("text")
+        health_status["pipeline_loaded"] = True
+        health_status["pipelines"]["text"] = info
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("LTX-2 warmup failed: %s", exc)
+        health_status["errors"]["text"] = str(exc)
     stream_manager.restart(current_config, _get_latest_camera_state)
 
 
@@ -250,6 +261,22 @@ def mood_prompt() -> dict[str, str]:
     with latest_camera_lock:
         prompt = _mood_to_prompt(latest_mood)
     return {"prompt": prompt}
+
+
+@app.get("/healthz")
+def healthz(deep: bool = False) -> dict[str, Any]:
+    if not deep:
+        return health_status
+    status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
+    for mode in ("text", "image"):
+        try:
+            info = warmup_pipeline(mode)
+            status["pipelines"][mode] = info
+            status["pipeline_loaded"] = True
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Health check warmup failed for %s: %s", mode, exc)
+            status["errors"][mode] = str(exc)
+    return status
 
 
 @app.get("/stream/{stream_id}.mjpg")
