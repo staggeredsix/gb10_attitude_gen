@@ -7,9 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 \
-        python3-pip \
-        python3-venv \
         git \
         libgl1 \
         libglib2.0-0 \
@@ -21,13 +18,20 @@ WORKDIR /app
 COPY requirements.txt README.md app.py ltx2_backend.py ./
 COPY static ./static
 
+# Install your app deps (should NOT include torch; if it does, remove it)
 RUN python3 -m pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && python3 -m pip install -r requirements.txt
 
-RUN mkdir -p /app/packages \
-    && git clone https://github.com/Lightricks/ltx-core.git /app/packages/ltx-core \
-    && git clone https://github.com/Lightricks/ltx-pipelines.git /app/packages/ltx-pipelines \
-    && python3 -m pip install -e /app/packages/ltx-core -e /app/packages/ltx-pipelines
+# Clone LTX-2 monorepo and install subpackages WITHOUT deps (prevents torch downgrade/replacement)
+RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2 \
+    && python3 -m pip install --no-deps -e /app/LTX-2/packages/ltx-core \
+    && python3 -m pip install --no-deps -e /app/LTX-2/packages/ltx-pipelines \
+    && python3 - <<'PY'
+import torch
+print("Torch kept:", torch.__version__)
+PY
+
+RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
 VOLUME ["/models"]
 
