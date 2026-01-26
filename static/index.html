@@ -118,6 +118,14 @@
           <option value="custom">Custom</option>
         </select>
 
+        <label for="outputPreset">Output preset</label>
+        <select id="outputPreset">
+          <option value="native">Native (no upscaling)</option>
+          <option value="spatial_x2">High quality (spatial ×2)</option>
+          <option value="temporal_x2">Smooth motion (temporal ×2)</option>
+          <option value="spatial_x2_temporal_x2">Ultra (spatial ×2 + temporal ×2)</option>
+        </select>
+
         <div class="row">
           <div>
             <label for="width">Width</label>
@@ -178,6 +186,7 @@
       const promptInput = document.getElementById("prompt");
       const negativePromptInput = document.getElementById("negativePrompt");
       const resolutionSelect = document.getElementById("resolution");
+      const outputPresetSelect = document.getElementById("outputPreset");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
       const fpsInput = document.getElementById("fps");
@@ -216,6 +225,7 @@
           height: parseInt(heightInput.value, 10),
           fps: parseInt(fpsInput.value, 10),
           streams: parseInt(streamsInput.value, 10),
+          output_preset: outputPresetSelect.value,
           seed: seedInput.value ? parseInt(seedInput.value, 10) : null,
           dream_strength: parseFloat(dreamStrengthInput.value),
           motion: parseFloat(motionInput.value),
@@ -265,6 +275,7 @@
         const presetValue = `${config.width}x${config.height}`;
         const hasPreset = Array.from(resolutionSelect.options).some((opt) => opt.value === presetValue);
         resolutionSelect.value = hasPreset ? presetValue : "custom";
+        outputPresetSelect.value = config.output_preset || "native";
         fpsInput.value = config.fps;
         streamsInput.value = config.streams;
         seedInput.value = config.seed ?? "";

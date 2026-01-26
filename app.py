@@ -29,19 +29,47 @@ LOGGER = logging.getLogger("ltx2_app")
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        return default
+
+
+def _env_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    return value.strip() if value is not None else default
+
+
+DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
+DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
+DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
+DEFAULT_OUTPUT_PRESET = _env_str("LTX2_OUTPUT_PRESET", "native")
+if DEFAULT_OUTPUT_PRESET not in {"native", "spatial_x2", "temporal_x2", "spatial_x2_temporal_x2"}:
+    LOGGER.warning("Invalid LTX2_OUTPUT_PRESET=%s; using native.", DEFAULT_OUTPUT_PRESET)
+    DEFAULT_OUTPUT_PRESET = "native"
+
+
 class RunConfig(BaseModel):
     mode: Literal["fever", "mood"] = "fever"
     prompt: str = Field("surreal dreamscape, liquid light, ethereal forms", min_length=1)
     negative_prompt: str = ""
-    width: int = 1280
-    height: int = 736
-    fps: int = 24
+    width: int = DEFAULT_WIDTH
+    height: int = DEFAULT_HEIGHT
+    fps: int = DEFAULT_FPS
     streams: int = 2
     seed: int | None = None
     dream_strength: float = 0.7
     motion: float = 0.6
     base_prompt: str = Field("portrait, cinematic lighting", min_length=1)
     identity_strength: float = 0.7
+    output_preset: Literal["native", "spatial_x2", "temporal_x2", "spatial_x2_temporal_x2"] = (
+        DEFAULT_OUTPUT_PRESET
+    )
 
 
 @dataclass

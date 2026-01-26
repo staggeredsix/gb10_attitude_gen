@@ -85,8 +85,41 @@ export HUGGINGFACE_HUB_CACHE=~/.cache/huggingface/hub
 - **Mode selector**: choose Fever Dream or Mood Mirror.
 - **Prompt / negative prompt**: used for Fever Dream, and as the base for Mood Mirror.
 - **Resolution / FPS / Streams**: changing any value restarts all streams.
+- **Output preset**:
+  - `native`: no upscaling (default).
+  - `spatial_x2`: high quality spatial upscaler.
+  - `temporal_x2`: smoother motion via temporal upscaler.
+  - `spatial_x2_temporal_x2`: spatial upscaler then temporal upscaler (highest quality, slowest).
 - **Dream strength / Motion**: coarse controls over guidance/steps and motion density.
 - **Mood Mirror**: enable the webcam, watch the live mood readout, and adjust the “retain identity” slider.
+
+## Upscaling presets & prompt length
+
+Environment variables and request fields:
+
+```bash
+# Base (native) generation size & fps
+export LTX2_NATIVE_WIDTH=1280
+export LTX2_NATIVE_HEIGHT=736
+export LTX2_NATIVE_FPS=24
+
+# Output preset for upscaling
+export LTX2_OUTPUT_PRESET=native
+
+# Force max prompt length (defaults to pipeline signature if unset)
+export LTX2_MAX_PROMPT_LEN=128
+```
+
+When posting to `/api/config`, you can also set:
+
+```json
+{
+  "output_preset": "spatial_x2"
+}
+```
+
+If you request an upscaler but the weights are missing, the backend logs a warning and falls back to native output
+(or raises if `LTX2_UPSCALER_REQUIRED=true`).
 
 ## Troubleshooting
 
