@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+numpy
+pillow
+opencv-python
+torch
+torchvision
+diffusers
+transformers
+accelerate
+safetensors
