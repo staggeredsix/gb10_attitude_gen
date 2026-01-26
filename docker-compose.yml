@@ -8,7 +8,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
-      LTX2_MODEL_ID: /models/LTX-2
+      LTX2_MODEL_ID: /models/huggingface/hub/models--Lightricks--LTX-2/snapshots/3e2da544631d30cc9df4fdb57e91d74d9f16ae05
       LTX2_VARIANT: fp4
       LTX2_ALLOW_DOWNLOAD: "false"
       HF_HOME: /models/huggingface

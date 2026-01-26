@@ -33,8 +33,8 @@ class RunConfig(BaseModel):
     mode: Literal["fever", "mood"] = "fever"
     prompt: str = Field("surreal dreamscape, liquid light, ethereal forms", min_length=1)
     negative_prompt: str = ""
-    width: int = 640
-    height: int = 360
+    width: int = 1280
+    height: int = 736
     fps: int = 24
     streams: int = 2
     seed: int | None = None

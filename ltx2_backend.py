@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 import cv2
 import numpy as np
 import torch
-from diffusers import AutoPipelineForImage2Video, AutoPipelineForText2Video
+from diffusers import DiffusionPipeline
 from huggingface_hub import snapshot_download
 from PIL import Image, ImageDraw, ImageFont
 
@@ -21,6 +21,7 @@ LOGGER = logging.getLogger("ltx2_backend")
 
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
+MAX_SEQ = int(os.getenv("LTX2_MAX_SEQUENCE_LENGTH", "49"))
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -52,11 +53,31 @@ def _resolve_local_snapshot(model_id: str) -> str | None:
     return None
 
 
+def _normalize_local_snapshot(path: str) -> str:
+    local_path = pathlib.Path(path).expanduser()
+    if not local_path.exists():
+        raise RuntimeError(f"Snapshot path does not exist: {local_path}")
+    if (local_path / "model_index.json").is_file():
+        return str(local_path)
+    snapshots_dir = local_path / "snapshots"
+    if snapshots_dir.is_dir():
+        candidates = sorted(snapshots_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        for snapshot in candidates:
+            if not snapshot.is_dir():
+                continue
+            if (snapshot / "model_index.json").is_file():
+                return str(snapshot)
+    raise RuntimeError(
+        "Missing model_index.json in snapshot. "
+        "Ensure you mounted the snapshot directory that contains model_index.json."
+    )
+
+
 def _collect_safetensors(snapshot_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted(snapshot_dir.rglob("*.safetensors"))
 
 
-def validate_snapshot(path: str, variant: str) -> dict[str, list[str]]:
+def validate_snapshot(path: str) -> dict[str, list[str]]:
     snapshot_dir = pathlib.Path(path)
     if not snapshot_dir.is_dir():
         raise RuntimeError(f"Snapshot path does not exist or is not a directory: {snapshot_dir}")
@@ -80,28 +101,19 @@ def validate_snapshot(path: str, variant: str) -> dict[str, list[str]]:
 
     safetensors = _collect_safetensors(snapshot_dir)
     safetensor_names = [str(path.relative_to(snapshot_dir)) for path in safetensors]
-    fp4_files = [name for name in safetensor_names if "fp4" in pathlib.Path(name).name.lower()]
     LOGGER.info("Found safetensors: %s", safetensor_names)
-    LOGGER.info("Found fp4 files: %s", fp4_files)
-    if variant == "fp4" and not fp4_files:
-        raise RuntimeError(
-            "No fp4 weights found in snapshot. "
-            "Expected files like <component>.fp4.safetensors."
-        )
-    return {"safetensors": safetensor_names, "fp4_files": fp4_files, "components": components}
+    return {"safetensors": safetensor_names, "components": components}
 
 
 def log_backend_configuration(model_id: str | None = None) -> None:
     resolved_model_id = model_id or os.getenv("LTX2_MODEL_ID", "Lightricks/LTX-2")
-    variant = os.getenv("LTX2_VARIANT", "fp4")
     local_files_only = _env_bool("LTX2_LOCAL_FILES_ONLY", is_local_path(resolved_model_id))
     allow_download = _env_bool("LTX2_ALLOW_DOWNLOAD", False)
     snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR", "/models/LTX-2")
     LOGGER.info(
-        "LTX-2 config: model_id=%s local_files_only=%s variant=%s allow_download=%s snapshot_dir=%s",
+        "LTX-2 config: model_id=%s local_files_only=%s allow_download=%s snapshot_dir=%s",
         resolved_model_id,
         local_files_only,
-        variant,
         allow_download,
         snapshot_dir,
     )
@@ -123,8 +135,6 @@ def _allow_patterns() -> list[str]:
         "text_encoder/**",
         "vae/**",
         "*.safetensors",
-        "*fp4*.safetensors",
-        "*.fp4.safetensors",
     ]
 
 
@@ -135,21 +145,18 @@ def _load_pipeline(mode: str, device: str = "cuda"):
             return _PIPELINES[cache_key]
 
         model_id = os.getenv("LTX2_MODEL_ID", "Lightricks/LTX-2")
-        variant = os.getenv("LTX2_VARIANT", "fp4")
-        fallback_variant = os.getenv("LTX2_FALLBACK_VARIANT", "").strip() or None
         allow_download = _env_bool("LTX2_ALLOW_DOWNLOAD", False)
-        snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR", "/models/LTX-2")
+        snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR", "/models/huggingface/hub/models--Lightricks--LTX-2")
         local_files_only = _env_bool("LTX2_LOCAL_FILES_ONLY", is_local_path(model_id))
 
-        pipeline_cls = AutoPipelineForImage2Video if mode == "image" else AutoPipelineForText2Video
-        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        dtype = torch.bfloat16
 
         resolved_source = model_id
         snapshot_path: str | None = None
         if is_local_path(model_id):
-            snapshot_path = os.path.expanduser(model_id)
+            snapshot_path = _normalize_local_snapshot(model_id)
             LOGGER.info("Using local snapshot: %s", snapshot_path)
-            validate_snapshot(snapshot_path, variant)
+            validate_snapshot(snapshot_path)
             resolved_source = snapshot_path
             local_files_only = True
         elif allow_download:
@@ -161,29 +168,24 @@ def _load_pipeline(mode: str, device: str = "cuda"):
                 resume_download=True,
                 allow_patterns=_allow_patterns(),
             )
-            validate_snapshot(snapshot_path, variant)
+            validate_snapshot(snapshot_path)
             resolved_source = snapshot_path
             local_files_only = True
         else:
             local_files_only = True
 
         LOGGER.info(
-            "Loading LTX-2 pipeline: source=%s local_files_only=%s variant=%s mode=%s",
+            "Loading LTX-2 pipeline: source=%s local_files_only=%s mode=%s",
             resolved_source,
             local_files_only,
-            variant,
             mode,
         )
 
-        variant_arg = variant or None
         try:
-            pipe = pipeline_cls.from_pretrained(
+            pipe = DiffusionPipeline.from_pretrained(
                 resolved_source,
+                local_files_only=True,
                 torch_dtype=dtype,
-                variant=variant_arg,
-                use_safetensors=True,
-                trust_remote_code=True,
-                local_files_only=local_files_only,
             )
         except Exception as exc:  # noqa: BLE001
             if not allow_download and not is_local_path(model_id):
@@ -191,37 +193,13 @@ def _load_pipeline(mode: str, device: str = "cuda"):
                     "LTX-2 snapshot not found in local cache. "
                     "Mount the snapshot at /models/LTX-2 or set LTX2_ALLOW_DOWNLOAD=true."
                 ) from exc
-            if variant == "fp4":
-                snapshot_hint = snapshot_path or (model_id if is_local_path(model_id) else _resolve_local_snapshot(model_id))
-                fp4_files: list[str] = []
-                if snapshot_hint:
-                    try:
-                        fp4_files = validate_snapshot(snapshot_hint, variant)["fp4_files"]
-                    except RuntimeError:
-                        LOGGER.exception("Snapshot validation failed for %s", snapshot_hint)
-                LOGGER.error("Found fp4 files: %s", fp4_files)
-                if fallback_variant:
-                    LOGGER.warning(
-                        "Falling back to variant %s because fp4 load failed: %s",
-                        fallback_variant,
-                        exc,
-                    )
-                    pipe = pipeline_cls.from_pretrained(
-                        resolved_source,
-                        torch_dtype=dtype,
-                        variant=fallback_variant,
-                        use_safetensors=True,
-                        trust_remote_code=True,
-                        local_files_only=local_files_only,
-                    )
-                else:
-                    raise RuntimeError(
-                        "Diffusers couldn’t match fp4 variant filenames. "
-                        "Ensure component fp4 weights are named like <component>.fp4.safetensors "
-                        "or use ltx-pipelines / rename weights."
-                    ) from exc
-            else:
-                raise
+            snapshot_hint = snapshot_path or (model_id if is_local_path(model_id) else _resolve_local_snapshot(model_id))
+            if snapshot_hint:
+                try:
+                    validate_snapshot(snapshot_hint)
+                except RuntimeError:
+                    LOGGER.exception("Snapshot validation failed for %s", snapshot_hint)
+            raise
 
         pipe.to(device)
         _PIPELINES[cache_key] = pipe
@@ -321,13 +299,14 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
             generator = torch.Generator(device=pipe.device).manual_seed(config.seed + int(time.time()))
         kwargs = {
             "prompt": prompt,
-            "negative_prompt": negative_prompt or None,
+            "negative_prompt": negative_prompt or "",
             "num_frames": num_frames,
             "height": config.height,
             "width": config.width,
             "guidance_scale": 3.0 + config.dream_strength * 5.0,
             "num_inference_steps": int(10 + config.motion * 10),
             "generator": generator,
+            "max_sequence_length": MAX_SEQ,
         }
         if _signature_requires_image(pipe):
             if last_frame is None:
@@ -379,7 +358,7 @@ def generate_mood_mirror_frames(
         strength = 0.2 + (1.0 - config.identity_strength) * 0.6
         kwargs = {
             "prompt": prompt,
-            "negative_prompt": config.negative_prompt or None,
+            "negative_prompt": config.negative_prompt or "",
             "num_frames": num_frames,
             "height": config.height,
             "width": config.width,
@@ -387,6 +366,7 @@ def generate_mood_mirror_frames(
             "num_inference_steps": int(10 + config.motion * 10),
             "generator": generator,
             "strength": strength,
+            "max_sequence_length": MAX_SEQ,
         }
         _assign_image_arg(pipe, kwargs, init_image)
         filtered_kwargs = _filter_kwargs(pipe, {k: v for k, v in kwargs.items() if v is not None})

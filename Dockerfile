@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/pytorch:25.12-py3
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -22,6 +22,8 @@ COPY static ./static
 
 RUN python3 -m pip install --upgrade pip \
     && pip install -r requirements.txt
+
+RUN python -m pip install -U --no-cache-dir "git+https://github.com/huggingface/diffusers.git@main"
 
 VOLUME ["/models"]
 

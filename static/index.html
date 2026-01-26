@@ -109,6 +109,15 @@
         <label for="negativePrompt">Negative prompt</label>
         <textarea id="negativePrompt"></textarea>
 
+        <label for="resolution">Resolution</label>
+        <select id="resolution">
+          <option value="1280x736">1280 × 736 (near 720p)</option>
+          <option value="1024x576">1024 × 576</option>
+          <option value="960x544">960 × 544</option>
+          <option value="640x352">640 × 352</option>
+          <option value="custom">Custom</option>
+        </select>
+
         <div class="row">
           <div>
             <label for="width">Width</label>
@@ -168,6 +177,7 @@
       const modeSelect = document.getElementById("mode");
       const promptInput = document.getElementById("prompt");
       const negativePromptInput = document.getElementById("negativePrompt");
+      const resolutionSelect = document.getElementById("resolution");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
       const fpsInput = document.getElementById("fps");
@@ -252,6 +262,9 @@
         negativePromptInput.value = config.negative_prompt || "";
         widthInput.value = config.width;
         heightInput.value = config.height;
+        const presetValue = `${config.width}x${config.height}`;
+        const hasPreset = Array.from(resolutionSelect.options).some((opt) => opt.value === presetValue);
+        resolutionSelect.value = hasPreset ? presetValue : "custom";
         fpsInput.value = config.fps;
         streamsInput.value = config.streams;
         seedInput.value = config.seed ?? "";
@@ -303,6 +316,16 @@
 
       modeSelect.addEventListener("change", updateMoodControls);
       applyButton.addEventListener("click", applyConfig);
+      resolutionSelect.addEventListener("change", () => {
+        if (resolutionSelect.value === "custom") {
+          return;
+        }
+        const [w, h] = resolutionSelect.value.split("x").map((v) => parseInt(v, 10));
+        if (!Number.isNaN(w) && !Number.isNaN(h)) {
+          widthInput.value = w;
+          heightInput.value = h;
+        }
+      });
       webcamToggle.addEventListener("click", toggleWebcam);
 
       loadConfig();

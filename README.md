@@ -52,7 +52,6 @@ This project targets the **NVFP4** weights from the LTX-2 repo (`ltx-2-19b-dev-f
 By default the backend loads:
 
 - model id: `Lightricks/LTX-2`
-- variant: `fp4`
 
 If you need to change those:
 
@@ -92,7 +91,6 @@ export HUGGINGFACE_HUB_CACHE=~/.cache/huggingface/hub
 ## Troubleshooting
 
 - **Missing model_index.json**: ensure the path you mounted is the snapshot root (the folder that contains `model_index.json`). The loader fails fast if this file is missing.
-- **FP4 variant mismatch**: the fp4 files must include `fp4` in their filename (ex: `transformer.fp4.safetensors`). If Diffusers cannot match the variant, it will error with a list of detected fp4 files.
 - **Container can’t see host cache**: the container only sees `/models` by default. Either mount `./models` with the prefetch script output or uncomment the optional HF cache mount in `docker-compose.yml`.
 - **LTX-2 load failed**: check your CUDA installation and make sure the model download completed.
 - **Webcam not streaming**: ensure your browser has webcam permissions and the page is served over HTTP(s) you trust.
