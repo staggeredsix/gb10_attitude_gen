@@ -5,30 +5,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/models/huggingface \
     HUGGINGFACE_HUB_CACHE=/models/huggingface/hub
 
-RUN apt-get update \ 
+RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
         libgl1 \
         libglib2.0-0 \
-        openssl \
-        git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /models
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
-COPY app ./app
-COPY scripts/container_entrypoint.sh /usr/local/bin/container_entrypoint.sh
+COPY requirements.txt README.md app.py ltx2_backend.py ./
+COPY static ./static
 
-RUN chmod +x /usr/local/bin/container_entrypoint.sh \
-    && python3 -m pip install --upgrade pip \
-    && pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 \
-    && pip install .
+RUN python3 -m pip install --upgrade pip \
+    && pip install -r requirements.txt
 
 VOLUME ["/models"]
 
-ENTRYPOINT ["/usr/local/bin/container_entrypoint.sh"]
-CMD ["ai-mood-mirror-web", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python3", "-m", "app", "--host", "0.0.0.0", "--port", "8000"]

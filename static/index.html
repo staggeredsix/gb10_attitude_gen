@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LTX-2 Fever Dream + Mood Mirror</title>
+    <style>
+      body {
+        font-family: "Inter", "Segoe UI", sans-serif;
+        background: #0b0d14;
+        color: #e6e9f2;
+        margin: 0;
+        padding: 0;
+      }
+      header {
+        padding: 24px 32px;
+        background: #131826;
+        border-bottom: 1px solid #1f2636;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 24px;
+        padding: 24px 32px;
+      }
+      .panel {
+        background: #121522;
+        border-radius: 12px;
+        padding: 16px;
+        border: 1px solid #1f2636;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin-top: 12px;
+        margin-bottom: 4px;
+        color: #b8c0d8;
+      }
+      input,
+      textarea,
+      select,
+      button {
+        width: 100%;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid #2b3247;
+        background: #0d111c;
+        color: #e6e9f2;
+      }
+      textarea {
+        min-height: 70px;
+      }
+      button {
+        background: #4b7bff;
+        border: none;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #3b6af0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+      }
+      .stream {
+        background: #0d111c;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid #20263b;
+      }
+      .stream img {
+        width: 100%;
+        display: block;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .status {
+        margin-top: 12px;
+        font-size: 0.85rem;
+        color: #9aa4bf;
+      }
+      .mood-values {
+        font-size: 0.85rem;
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AI Fever Dream + AI Mood Mirror (LTX-2)</h1>
+      <p>Generate looping LTX-2 videos from prompts or mirror your live mood from the webcam.</p>
+    </header>
+    <main>
+      <section class="panel">
+        <label for="mode">Mode</label>
+        <select id="mode">
+          <option value="fever">AI Fever Dream</option>
+          <option value="mood">AI Mood Mirror</option>
+        </select>
+
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt"></textarea>
+
+        <label for="negativePrompt">Negative prompt</label>
+        <textarea id="negativePrompt"></textarea>
+
+        <div class="row">
+          <div>
+            <label for="width">Width</label>
+            <input id="width" type="number" min="256" step="32" />
+          </div>
+          <div>
+            <label for="height">Height</label>
+            <input id="height" type="number" min="256" step="32" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="fps">FPS</label>
+            <input id="fps" type="number" min="1" max="60" />
+          </div>
+          <div>
+            <label for="streams">Streams</label>
+            <input id="streams" type="number" min="1" max="16" />
+          </div>
+        </div>
+
+        <label for="seed">Seed (optional)</label>
+        <input id="seed" type="number" placeholder="Leave empty for random" />
+
+        <label for="dreamStrength">Dream strength</label>
+        <input id="dreamStrength" type="range" min="0" max="1" step="0.05" />
+
+        <label for="motion">Motion</label>
+        <input id="motion" type="range" min="0" max="1" step="0.05" />
+
+        <div id="moodControls">
+          <label for="basePrompt">Mood Mirror base prompt</label>
+          <textarea id="basePrompt"></textarea>
+
+          <label for="identityStrength">Retain identity → Abstract mirror</label>
+          <input id="identityStrength" type="range" min="0" max="1" step="0.05" />
+
+          <button id="webcamToggle" type="button">Enable webcam</button>
+          <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
+        </div>
+
+        <button id="applyButton" type="button">Apply settings</button>
+        <div class="status" id="status"></div>
+      </section>
+
+      <section class="panel">
+        <h3>Streams</h3>
+        <div class="grid" id="streamGrid"></div>
+      </section>
+    </main>
+
+    <video id="webcamVideo" autoplay playsinline style="display: none;"></video>
+    <canvas id="webcamCanvas" width="640" height="360" style="display: none;"></canvas>
+
+    <script>
+      const modeSelect = document.getElementById("mode");
+      const promptInput = document.getElementById("prompt");
+      const negativePromptInput = document.getElementById("negativePrompt");
+      const widthInput = document.getElementById("width");
+      const heightInput = document.getElementById("height");
+      const fpsInput = document.getElementById("fps");
+      const streamsInput = document.getElementById("streams");
+      const seedInput = document.getElementById("seed");
+      const dreamStrengthInput = document.getElementById("dreamStrength");
+      const motionInput = document.getElementById("motion");
+      const basePromptInput = document.getElementById("basePrompt");
+      const identityStrengthInput = document.getElementById("identityStrength");
+      const applyButton = document.getElementById("applyButton");
+      const status = document.getElementById("status");
+      const streamGrid = document.getElementById("streamGrid");
+      const moodControls = document.getElementById("moodControls");
+      const webcamToggle = document.getElementById("webcamToggle");
+      const moodValues = document.getElementById("moodValues");
+      const webcamVideo = document.getElementById("webcamVideo");
+      const webcamCanvas = document.getElementById("webcamCanvas");
+      const webcamCtx = webcamCanvas.getContext("2d");
+      let webcamStream = null;
+      let webcamInterval = null;
+
+      function setStatus(message) {
+        status.textContent = message;
+      }
+
+      function updateMoodControls() {
+        moodControls.style.display = modeSelect.value === "mood" ? "block" : "none";
+      }
+
+      function buildConfig() {
+        return {
+          mode: modeSelect.value,
+          prompt: promptInput.value.trim(),
+          negative_prompt: negativePromptInput.value.trim(),
+          width: parseInt(widthInput.value, 10),
+          height: parseInt(heightInput.value, 10),
+          fps: parseInt(fpsInput.value, 10),
+          streams: parseInt(streamsInput.value, 10),
+          seed: seedInput.value ? parseInt(seedInput.value, 10) : null,
+          dream_strength: parseFloat(dreamStrengthInput.value),
+          motion: parseFloat(motionInput.value),
+          base_prompt: basePromptInput.value.trim(),
+          identity_strength: parseFloat(identityStrengthInput.value),
+        };
+      }
+
+      async function applyConfig() {
+        setStatus("Applying settings...");
+        const config = buildConfig();
+        const response = await fetch("/api/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        if (!response.ok) {
+          const data = await response.json();
+          setStatus(`Error: ${data.detail}`);
+          return;
+        }
+        const updated = await response.json();
+        setStatus("Settings applied.");
+        buildStreams(updated.streams);
+      }
+
+      function buildStreams(count) {
+        streamGrid.innerHTML = "";
+        for (let i = 0; i < count; i++) {
+          const wrapper = document.createElement("div");
+          wrapper.className = "stream";
+          const img = document.createElement("img");
+          img.src = `/stream/${i}.mjpg?ts=${Date.now()}`;
+          wrapper.appendChild(img);
+          streamGrid.appendChild(wrapper);
+        }
+      }
+
+      async function loadConfig() {
+        const response = await fetch("/api/config");
+        const config = await response.json();
+        modeSelect.value = config.mode;
+        promptInput.value = config.prompt;
+        negativePromptInput.value = config.negative_prompt || "";
+        widthInput.value = config.width;
+        heightInput.value = config.height;
+        fpsInput.value = config.fps;
+        streamsInput.value = config.streams;
+        seedInput.value = config.seed ?? "";
+        dreamStrengthInput.value = config.dream_strength;
+        motionInput.value = config.motion;
+        basePromptInput.value = config.base_prompt;
+        identityStrengthInput.value = config.identity_strength;
+        updateMoodControls();
+        buildStreams(config.streams);
+      }
+
+      async function sendMoodFrame() {
+        if (!webcamStream) {
+          return;
+        }
+        webcamCanvas.width = webcamVideo.videoWidth || 640;
+        webcamCanvas.height = webcamVideo.videoHeight || 360;
+        webcamCtx.drawImage(webcamVideo, 0, 0, webcamCanvas.width, webcamCanvas.height);
+        const blob = await new Promise((resolve) => webcamCanvas.toBlob(resolve, "image/jpeg", 0.7));
+        if (!blob) return;
+        const response = await fetch("/api/mood/frame", { method: "POST", body: blob });
+        if (response.ok) {
+          const mood = await response.json();
+          moodValues.textContent = `Mood: valence ${mood.valence.toFixed(2)} | arousal ${mood.arousal.toFixed(2)} | ${
+            mood.labels.join(", ") || "neutral"
+          }`;
+        }
+      }
+
+      async function toggleWebcam() {
+        if (webcamStream) {
+          webcamStream.getTracks().forEach((track) => track.stop());
+          webcamStream = null;
+          clearInterval(webcamInterval);
+          webcamInterval = null;
+          webcamToggle.textContent = "Enable webcam";
+          moodValues.textContent = "Mood: webcam disabled.";
+          return;
+        }
+        try {
+          webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          webcamVideo.srcObject = webcamStream;
+          webcamToggle.textContent = "Disable webcam";
+          webcamInterval = setInterval(sendMoodFrame, 200);
+        } catch (error) {
+          moodValues.textContent = `Webcam error: ${error}`;
+        }
+      }
+
+      modeSelect.addEventListener("change", updateMoodControls);
+      applyButton.addEventListener("click", applyConfig);
+      webcamToggle.addEventListener("click", toggleWebcam);
+
+      loadConfig();
+    </script>
+  </body>
+</html>
