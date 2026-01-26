@@ -10,6 +10,7 @@ RUN apt-get update \
         python3 \
         python3-pip \
         python3-venv \
+        git \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -23,7 +24,10 @@ COPY static ./static
 RUN python3 -m pip install --upgrade pip \
     && pip install -r requirements.txt
 
-RUN python -m pip install -U --no-cache-dir "git+https://github.com/huggingface/diffusers.git@main"
+RUN mkdir -p /app/packages \
+    && git clone https://github.com/Lightricks/ltx-core.git /app/packages/ltx-core \
+    && git clone https://github.com/Lightricks/ltx-pipelines.git /app/packages/ltx-pipelines \
+    && python3 -m pip install -e /app/packages/ltx-core -e /app/packages/ltx-pipelines
 
 VOLUME ["/models"]
 
