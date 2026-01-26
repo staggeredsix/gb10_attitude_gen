@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 import random
 import threading
 import time
@@ -19,6 +20,24 @@ _PIPELINE = None
 _PIPELINE_LOCK = threading.Lock()
 
 
+def _resolve_local_snapshot(model_id: str, filename: str) -> str | None:
+    cache_root = os.getenv("HUGGINGFACE_HUB_CACHE") or os.getenv("HF_HOME")
+    if not cache_root:
+        return None
+    cache_root = os.path.expanduser(cache_root)
+    repo_dir = f"models--{model_id.replace('/', '--')}"
+    snapshots_dir = pathlib.Path(cache_root) / repo_dir / "snapshots"
+    if not snapshots_dir.is_dir():
+        return None
+    candidates = sorted(snapshots_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    for snapshot in candidates:
+        if not snapshot.is_dir():
+            continue
+        if (snapshot / filename).is_file() and (snapshot / "model_index.json").is_file():
+            return str(snapshot)
+    return None
+
+
 def _load_pipeline(device: str = "cuda"):
     global _PIPELINE
     with _PIPELINE_LOCK:
@@ -26,22 +45,29 @@ def _load_pipeline(device: str = "cuda"):
             return _PIPELINE
         model_id = os.getenv("LTX2_MODEL_ID", "Lightricks/LTX-2")
         variant = os.getenv("LTX2_VARIANT", "fp4")
+        model_file = os.getenv("LTX2_MODEL_FILE", "ltx-2-19b-dev-fp4.safetensors")
+        local_path = os.getenv("LTX2_MODEL_PATH")
+        if not local_path:
+            local_path = _resolve_local_snapshot(model_id, model_file)
+        model_source = local_path or model_id
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        LOGGER.info("Loading LTX-2 pipeline from %s (variant=%s)", model_id, variant)
+        LOGGER.info("Loading LTX-2 pipeline from %s (variant=%s)", model_source, variant)
         try:
             pipe = DiffusionPipeline.from_pretrained(
-                model_id,
+                model_source,
                 torch_dtype=dtype,
                 variant=variant,
                 use_safetensors=True,
+                trust_remote_code=True,
             )
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Failed to load LTX-2 with variant %s: %s", variant, exc)
             try:
                 pipe = DiffusionPipeline.from_pretrained(
-                    model_id,
+                    model_source,
                     torch_dtype=dtype,
                     use_safetensors=True,
+                    trust_remote_code=True,
                 )
             except Exception as inner_exc:  # noqa: BLE001
                 LOGGER.error("Unable to initialize LTX-2: %s", inner_exc)
