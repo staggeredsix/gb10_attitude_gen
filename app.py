@@ -51,6 +51,7 @@ def _env_str(name: str, default: str) -> str:
 DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
 DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
 DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
+DEFAULT_STREAMS = _env_int("LTX2_STREAMS", 2)
 DEFAULT_OUTPUT_MODE = _env_str("LTX2_OUTPUT_MODE", "native")
 if DEFAULT_OUTPUT_MODE not in {"native", "upscaled"}:
     LOGGER.warning("Invalid LTX2_OUTPUT_MODE=%s; using native.", DEFAULT_OUTPUT_MODE)
@@ -64,7 +65,7 @@ class RunConfig(BaseModel):
     width: int = DEFAULT_WIDTH
     height: int = DEFAULT_HEIGHT
     fps: int = DEFAULT_FPS
-    streams: int = 2
+    streams: int = DEFAULT_STREAMS
     seed: int | None = None
     dream_strength: float = 0.7
     motion: float = 0.6
@@ -171,6 +172,12 @@ def _validate_config(config: RunConfig) -> RunConfig:
             detail="Upscaled output requires width and height to be multiples of 64.",
         )
     config.streams = max(1, min(config.streams, 16))
+    if os.getenv("LTX2_BACKEND", "pipelines").strip().lower() == "pipelines" and config.streams > 1:
+        LOGGER.warning(
+            "Pipelines backend with streams=%s can cause repeated model loads/VRAM churn. "
+            "Consider setting LTX2_STREAMS=1 for fp8.",
+            config.streams,
+        )
     config.fps = max(1, min(config.fps, 60))
     config.dream_strength = float(np.clip(config.dream_strength, 0.0, 1.0))
     config.motion = float(np.clip(config.motion, 0.0, 1.0))

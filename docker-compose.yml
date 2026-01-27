@@ -13,6 +13,8 @@ services:
       LTX2_OUTPUT_MODE: ${LTX2_OUTPUT_MODE:-native}
       LTX2_SNAPSHOT_DIR: ${LTX2_SNAPSHOT_DIR:-/models/huggingface/hub/models--Lightricks--LTX-2}
       LTX2_FP8_FILE: ${LTX2_FP8_FILE:-ltx-2-19b-dev-fp8.safetensors}
+      LTX2_PIPELINES_CACHE_MODELS: ${LTX2_PIPELINES_CACHE_MODELS:-1}
+      LTX2_STREAMS: ${LTX2_STREAMS:-1}
       LTX2_GEMMA_ROOT: ${LTX2_GEMMA_ROOT:-/models/gemma}
       LTX2_SPATIAL_UPSAMPLER_PATH: ${LTX2_SPATIAL_UPSAMPLER_PATH:-/models/ltx2/ltx-2-spatial-upscaler-x2-1.0.safetensors}
       LTX2_DISTILLED_LORA_PATH: ${LTX2_DISTILLED_LORA_PATH:-/models/ltx2/ltx-2-distilled-lora-x2-1.0.safetensors}

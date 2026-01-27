@@ -68,6 +68,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _log_vram(prefix: str) -> None:
+    if not _env_bool("LTX2_LOG_VRAM", False):
+        return
+    if not torch.cuda.is_available():
+        return
+    try:
+        allocated = torch.cuda.memory_allocated() / (1024**2)
+        reserved = torch.cuda.memory_reserved() / (1024**2)
+        LOGGER.info("VRAM %s allocated=%.1fMB reserved=%.1fMB", prefix, allocated, reserved)
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Failed to query VRAM stats")
+
+
 def _get_backend() -> str:
     backend = os.getenv("LTX2_BACKEND", DEFAULT_BACKEND).strip().lower()
     if backend not in {"pipelines", "diffusers"}:
@@ -686,6 +699,7 @@ def _generate_video_chunk(
     seed: int | None,
     images: list[tuple[str, int, float]] | None = None,
 ) -> Iterable[Image.Image]:
+    _log_vram("chunk_start")
     signature = inspect.signature(pipe.__call__)
     supports_output_path = any(name in signature.parameters for name in ("output_path", "output"))
     output_path = f"/tmp/ltx_out_{uuid.uuid4().hex}.mp4" if supports_output_path else None
@@ -704,6 +718,7 @@ def _generate_video_chunk(
         images=images,
     )
     result = _call_ltx_pipeline(pipe, kwargs)
+    _log_vram("chunk_end")
     if output_path and pathlib.Path(output_path).is_file():
         try:
             for frame in _yield_video_frames(output_path):
@@ -714,6 +729,7 @@ def _generate_video_chunk(
             except OSError:
                 LOGGER.warning("Failed to remove temporary video: %s", output_path)
         return
+    _log_vram("diffusers_chunk_end")
     frames = _extract_video_frames_from_pipeline_result(result)
     for frame in frames:
         yield frame
@@ -746,6 +762,7 @@ def _generate_diffusers_chunk(
     num_inference_steps: int,
     seed: int | None,
 ) -> Iterable[Image.Image]:
+    _log_vram("diffusers_chunk_start")
     kwargs = _build_diffusers_kwargs(
         pipe,
         prompt=prompt,
