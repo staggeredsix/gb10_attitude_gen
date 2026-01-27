@@ -25,7 +25,10 @@ pip install -r requirements.txt
 
 ```bash
 export HF_TOKEN=...  # required if the model requires a license
-./download_model.sh all
+./download_model.sh fp8   # fp8 checkpoint + upsampler + distilled lora + gemma
+./download_model.sh fp4   # fp4 diffusers snapshot
+./download_model.sh gemma # gemma only
+./download_model.sh all   # fp8 + fp4 + gemma
 ```
 
 Gemma downloads into `./models/gemma` by default. When running in Docker, mount that folder and set:
@@ -45,55 +48,32 @@ python -m app --host 0.0.0.0 --port 8000
 Open from the same machine: `http://localhost:8000`  
 Open from your LAN: `http://<your-machine-ip>:8000`
 
-## Docker (recommended offline snapshot)
+## Docker (profiled backends)
+
+FP8 (pipelines):
 
 ```bash
-python scripts/prefetch_ltx2.py --fp4-only
-docker compose up --build
+docker compose --profile fp8 up --build
 ```
 
-The compose file mounts `./models` to `/models` and sets:
-
-- `LTX2_MODEL_ID=/models/LTX-2`
-- `LTX2_VARIANT=fp4`
-- `LTX2_ALLOW_DOWNLOAD=false`
-
-If you prefer using an existing Hugging Face cache, uncomment the cache mount in
-`docker-compose.yml` and set `LTX2_MODEL_ID` to the repo id (`Lightricks/LTX-2`).
-
-## Model notes (LTX-2 NVFP4)
-
-This project targets the **NVFP4** weights from the LTX-2 repo (`ltx-2-19b-dev-fp4.safetensors`).
-By default the backend loads:
-
-- model id: `Lightricks/LTX-2`
-
-If you need to change those:
+FP4 (diffusers, WIP):
 
 ```bash
-export LTX2_MODEL_ID="Lightricks/LTX-2"
-export LTX2_VARIANT="fp4"
+docker compose --profile fp4 up --build
 ```
 
-To download a local snapshot explicitly:
+The compose file mounts `./models` to `/models` and expects:
 
-```bash
-python scripts/prefetch_ltx2.py --fp4-only
-```
-
-If you want to allow in-container downloads instead, set:
-
-```bash
-export LTX2_ALLOW_DOWNLOAD=true
-export LTX2_SNAPSHOT_DIR=/models/LTX-2
-```
-
-The first run will download the model to your Hugging Face cache if downloads are enabled. If you have a token:
-
-```bash
-export HF_HOME=~/.cache/huggingface
-export HUGGINGFACE_HUB_CACHE=~/.cache/huggingface/hub
-```
+- FP8 (pipelines):
+  - `LTX2_BACKEND=pipelines`
+  - `LTX2_CHECKPOINT_PATH=/models/.../ltx-2-19b-dev-fp8.safetensors`
+  - `LTX2_GEMMA_ROOT=/models/gemma`
+  - optional upscaler/lora paths for two-stage output
+- FP4 (diffusers):
+  - `LTX2_BACKEND=diffusers`
+  - `LTX2_MODEL_ID=Lightricks/LTX-2`
+  - `LTX2_SNAPSHOT_DIR=/models/huggingface/hub/models--Lightricks--LTX-2/snapshots/<hash>`
+  - `LTX2_FP4_FILE=ltx-2-19b-dev-fp4.safetensors`
 
 ## UI guide
 
@@ -119,14 +99,22 @@ export LTX2_NATIVE_FPS=24
 # Output mode (native or upscaled)
 export LTX2_OUTPUT_MODE=native
 
-# Required LTX-2 artifacts
+# Backend selection
+export LTX2_BACKEND=pipelines  # or diffusers
+
+# Pipelines (FP8) required artifacts
 export LTX2_GEMMA_ROOT=/models/ltx2/gemma
-export LTX2_CHECKPOINT_PATH=/models/ltx2/ltx2-fp4.safetensors
+export LTX2_CHECKPOINT_PATH=/models/ltx2/ltx-2-19b-dev-fp8.safetensors
 
 # Required only for upscaled mode
-export LTX2_SPATIAL_UPSAMPLER_PATH=/models/ltx2/ltx2-spatial-upsampler.safetensors
-export LTX2_DISTILLED_LORA_PATH=/models/ltx2/ltx2-distilled-lora.safetensors
+export LTX2_SPATIAL_UPSAMPLER_PATH=/models/ltx2/ltx-2-spatial-upscaler-x2-1.0.safetensors
+export LTX2_DISTILLED_LORA_PATH=/models/ltx2/ltx-2-distilled-lora-x2-1.0.safetensors
 export LTX2_DISTILLED_LORA_STRENGTH=0.6
+
+# Diffusers (FP4) artifacts
+export LTX2_MODEL_ID=Lightricks/LTX-2
+export LTX2_SNAPSHOT_DIR=/models/huggingface/hub/models--Lightricks--LTX-2/snapshots/<hash>
+export LTX2_FP4_FILE=ltx-2-19b-dev-fp4.safetensors
 ```
 
 When posting to `/api/config`, you can also set:
@@ -136,12 +124,14 @@ When posting to `/api/config`, you can also set:
   "output_mode": "upscaled"
 }
 ```
+
 Upscaled output requires width and height to be multiples of 64 (stage 1 uses half resolution).
 
 ## Troubleshooting
 
 - **Missing model_index.json**: ensure the path you mounted is the snapshot root (the folder that contains `model_index.json`). The loader fails fast if this file is missing.
-- **Container can’t see host cache**: the container only sees `/models` by default. Either mount `./models` with the prefetch script output or uncomment the optional HF cache mount in `docker-compose.yml`.
+- **Container can’t see host cache**: the container only sees `/models` by default. Either mount `./models` with the download script output or uncomment the optional HF cache mount in
+  `docker-compose.yml`.
 - **LTX-2 load failed**: check your CUDA installation and make sure the model download completed.
 - **Webcam not streaming**: ensure your browser has webcam permissions and the page is served over HTTP(s) you trust.
 - **Slow FPS**: reduce resolution, reduce streams, or lower FPS.

@@ -19,6 +19,7 @@ from PIL import Image
 
 from ltx2_backend import (
     DEFAULT_GEMMA_ROOT,
+    backend_requires_gemma,
     generate_fever_dream_frames,
     generate_mood_mirror_frames,
     log_backend_configuration,
@@ -234,9 +235,22 @@ health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipeli
 
 
 def _gemma_status() -> dict[str, Any]:
+    gemma_required = backend_requires_gemma()
     gemma_root = os.getenv("LTX2_GEMMA_ROOT", DEFAULT_GEMMA_ROOT)
+    if not gemma_required:
+        return {
+            "gemma_root": gemma_root,
+            "gemma_ok": True,
+            "gemma_required": False,
+            "gemma_reason": "Gemma not required for diffusers backend.",
+        }
     gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
-    return {"gemma_root": gemma_root, "gemma_ok": gemma_ok, "gemma_reason": gemma_reason}
+    return {
+        "gemma_root": gemma_root,
+        "gemma_ok": gemma_ok,
+        "gemma_required": True,
+        "gemma_reason": gemma_reason,
+    }
 
 
 @app.on_event("startup")
@@ -271,14 +285,8 @@ async def set_config(request: Request) -> RunConfig:
     config = RunConfig(**payload)
     config = _validate_config(config)
     gemma_status = _gemma_status()
-    if not gemma_status["gemma_ok"]:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Gemma is required. Set LTX2_GEMMA_ROOT to a directory created by "
-                "download_model.sh (google/gemma-3-12b)."
-            ),
-        )
+    if gemma_status.get("gemma_required") and not gemma_status.get("gemma_ok", False):
+        LOGGER.warning("Gemma missing; streams will show status frames. (%s)", gemma_status.get("gemma_reason"))
     global current_config
     current_config = config
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)

@@ -31,8 +31,6 @@ import torch
 print("Torch kept:", torch.__version__)
 PY
 
-RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
-
 VOLUME ["/models"]
 
 CMD ["python3", "-m", "app", "--host", "0.0.0.0", "--port", "8000"]

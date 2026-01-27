@@ -26,6 +26,9 @@ _PIPELINE_LOCK = threading.Lock()
 
 DEFAULT_GEMMA_MODEL_ID = "google/gemma-3-12b"
 DEFAULT_GEMMA_ROOT = "/models/gemma"
+DEFAULT_BACKEND = "pipelines"
+DEFAULT_LTX2_MODEL_ID = "Lightricks/LTX-2"
+DEFAULT_FP4_FILE = "ltx-2-19b-dev-fp4.safetensors"
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,14 @@ class LTX2Artifacts:
     loras: list[dict[str, object]]
 
 
+@dataclass(frozen=True)
+class DiffusersArtifacts:
+    model_id: str
+    snapshot_dir: str | None
+    fp4_file: str
+    allow_download: bool
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -47,6 +58,25 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         LOGGER.warning("Invalid float for %s=%s; using %s", name, value, default)
         return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_backend() -> str:
+    backend = os.getenv("LTX2_BACKEND", DEFAULT_BACKEND).strip().lower()
+    if backend not in {"pipelines", "diffusers"}:
+        LOGGER.warning("Invalid LTX2_BACKEND=%s; defaulting to %s", backend, DEFAULT_BACKEND)
+        return DEFAULT_BACKEND
+    return backend
+
+
+def backend_requires_gemma() -> bool:
+    return _get_backend() == "pipelines"
 
 
 def _has_preprocessor_config(root: pathlib.Path) -> bool:
@@ -103,7 +133,7 @@ def _resolve_checkpoint_path() -> str:
         repo_root = root_path / "models--Lightricks--LTX-2"
         search_root = repo_root if repo_root.exists() else root_path
         candidates = sorted(
-            search_root.rglob("*fp4*.safetensors"),
+            search_root.rglob("*fp8*.safetensors"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -111,8 +141,8 @@ def _resolve_checkpoint_path() -> str:
             return str(candidates[0])
 
     raise RuntimeError(
-        "LTX2_CHECKPOINT_PATH is not set and no fp4 checkpoint was found in cache. "
-        "Set LTX2_CHECKPOINT_PATH to the fp4 checkpoint file path."
+        "LTX2_CHECKPOINT_PATH is not set and no fp8 checkpoint was found in cache. "
+        "Set LTX2_CHECKPOINT_PATH to the fp8 checkpoint file path."
     )
 
 
@@ -156,30 +186,73 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
     )
 
 
+def _resolve_diffusers_artifacts() -> DiffusersArtifacts:
+    snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
+    if snapshot_dir:
+        snapshot_path = pathlib.Path(snapshot_dir).expanduser()
+        if not snapshot_path.exists():
+            raise RuntimeError(f"LTX2_SNAPSHOT_DIR does not exist: {snapshot_path}")
+        if (snapshot_path / "model_index.json").is_file():
+            snapshot_dir = str(snapshot_path)
+        else:
+            snapshot_dir = None
+            snapshots_root = snapshot_path / "snapshots"
+            if snapshots_root.is_dir():
+                candidates = sorted(
+                    (p for p in snapshots_root.iterdir() if p.is_dir()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for candidate in candidates:
+                    if (candidate / "model_index.json").is_file():
+                        snapshot_dir = str(candidate)
+                        break
+            if snapshot_dir is None:
+                snapshot_dir = str(snapshot_path)
+    model_id = os.getenv("LTX2_MODEL_ID", DEFAULT_LTX2_MODEL_ID)
+    fp4_file = os.getenv("LTX2_FP4_FILE", DEFAULT_FP4_FILE)
+    allow_download = _env_bool("LTX2_ALLOW_DOWNLOAD", default=False)
+    return DiffusersArtifacts(
+        model_id=model_id,
+        snapshot_dir=snapshot_dir,
+        fp4_file=fp4_file,
+        allow_download=allow_download,
+    )
+
+
 def log_backend_configuration(output_mode: str | None = None) -> None:
     resolved_output_mode = output_mode or os.getenv("LTX2_OUTPUT_MODE", "native")
+    backend = _get_backend()
+    LOGGER.info("LTX-2 backend=%s", backend)
     LOGGER.info("LTX-2 output_mode=%s", resolved_output_mode)
-    try:
-        checkpoint_path = _resolve_checkpoint_path()
-        LOGGER.info("LTX-2 checkpoint_path=%s", checkpoint_path)
-    except RuntimeError as exc:
-        LOGGER.warning("LTX-2 checkpoint resolution failed: %s", exc)
-    gemma_root = _resolve_gemma_root()
-    gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
-    gemma_has_preprocessor = _has_preprocessor_config(pathlib.Path(gemma_root).expanduser())
-    LOGGER.info("LTX-2 gemma_root=%s", gemma_root)
-    LOGGER.info("LTX-2 gemma_preprocessor_config=%s", gemma_has_preprocessor)
-    LOGGER.info("LTX-2 gemma_model_id=%s", DEFAULT_GEMMA_MODEL_ID)
-    if not gemma_ok:
-        LOGGER.warning(
-            "Gemma is required for LTX-2 pipelines. Set LTX2_GEMMA_ROOT to the Gemma "
-            "directory created by download_model.sh. (%s)",
-            gemma_reason,
-        )
-    if resolved_output_mode == "upscaled":
-        LOGGER.info("LTX-2 spatial_upsampler_path=%s", os.getenv("LTX2_SPATIAL_UPSAMPLER_PATH"))
-        LOGGER.info("LTX-2 distilled_lora_path=%s", os.getenv("LTX2_DISTILLED_LORA_PATH"))
-        LOGGER.info("LTX-2 distilled_lora_strength=%s", _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6))
+    if backend == "pipelines":
+        try:
+            checkpoint_path = _resolve_checkpoint_path()
+            LOGGER.info("LTX-2 checkpoint_path=%s", checkpoint_path)
+        except RuntimeError as exc:
+            LOGGER.warning("LTX-2 checkpoint resolution failed: %s", exc)
+        gemma_root = _resolve_gemma_root()
+        gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
+        gemma_has_preprocessor = _has_preprocessor_config(pathlib.Path(gemma_root).expanduser())
+        LOGGER.info("LTX-2 gemma_root=%s", gemma_root)
+        LOGGER.info("LTX-2 gemma_preprocessor_config=%s", gemma_has_preprocessor)
+        LOGGER.info("LTX-2 gemma_model_id=%s", DEFAULT_GEMMA_MODEL_ID)
+        if not gemma_ok:
+            LOGGER.warning(
+                "Gemma is required for LTX-2 pipelines. Set LTX2_GEMMA_ROOT to the Gemma "
+                "directory created by download_model.sh. (%s)",
+                gemma_reason,
+            )
+        if resolved_output_mode == "upscaled":
+            LOGGER.info("LTX-2 spatial_upsampler_path=%s", os.getenv("LTX2_SPATIAL_UPSAMPLER_PATH"))
+            LOGGER.info("LTX-2 distilled_lora_path=%s", os.getenv("LTX2_DISTILLED_LORA_PATH"))
+            LOGGER.info("LTX-2 distilled_lora_strength=%s", _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6))
+    else:
+        diffusers = _resolve_diffusers_artifacts()
+        LOGGER.info("LTX-2 diffusers_model_id=%s", diffusers.model_id)
+        LOGGER.info("LTX-2 diffusers_snapshot_dir=%s", diffusers.snapshot_dir)
+        LOGGER.info("LTX-2 diffusers_fp4_file=%s", diffusers.fp4_file)
+        LOGGER.info("LTX-2 diffusers_allow_download=%s", diffusers.allow_download)
 
 
 def _filter_kwargs_for_callable(func: Callable[..., object], kwargs: dict[str, object]) -> dict[str, object]:
@@ -214,8 +287,8 @@ def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object], *, output_m
     return factory(**filtered)
 
 
-def _load_pipeline(output_mode: str, device: str = "cuda"):
-    cache_key = f"{output_mode}:{device}"
+def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
+    cache_key = f"pipelines:{output_mode}:{device}"
     with _PIPELINE_LOCK:
         if cache_key in _PIPELINES:
             return _PIPELINES[cache_key]
@@ -268,9 +341,73 @@ def _load_pipeline(output_mode: str, device: str = "cuda"):
         return pipe
 
 
+def _load_diffusers_pipeline(output_mode: str, device: str = "cuda") -> object:
+    cache_key = f"diffusers:{output_mode}:{device}"
+    with _PIPELINE_LOCK:
+        if cache_key in _PIPELINES:
+            return _PIPELINES[cache_key]
+
+        artifacts = _resolve_diffusers_artifacts()
+        try:
+            from diffusers import DiffusionPipeline
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "diffusers is required for LTX2_BACKEND=diffusers. "
+                "Install it with pip install diffusers."
+            ) from exc
+
+        source = artifacts.snapshot_dir or artifacts.model_id
+        local_only = not artifacts.allow_download
+        LOGGER.info(
+            "Loading diffusers pipeline: source=%s local_only=%s fp4_file=%s",
+            source,
+            local_only,
+            artifacts.fp4_file,
+        )
+
+        load_kwargs: dict[str, object] = {
+            "torch_dtype": torch.float16,
+            "local_files_only": local_only,
+        }
+        if os.path.isdir(source):
+            load_kwargs["cache_dir"] = None
+        pipe = DiffusionPipeline.from_pretrained(source, **_filter_kwargs_for_callable(DiffusionPipeline.from_pretrained, load_kwargs))
+
+        if artifacts.fp4_file:
+            fp4_path = pathlib.Path(artifacts.fp4_file)
+            if not fp4_path.is_file() and artifacts.snapshot_dir:
+                candidate = pathlib.Path(artifacts.snapshot_dir) / artifacts.fp4_file
+                if candidate.is_file():
+                    fp4_path = candidate
+            if fp4_path.is_file():
+                if hasattr(pipe, "load_checkpoint"):
+                    LOGGER.info("Loading fp4 checkpoint via load_checkpoint: %s", fp4_path)
+                    pipe.load_checkpoint(str(fp4_path))
+                elif hasattr(pipe, "load_lora_weights"):
+                    LOGGER.info("Loading fp4 checkpoint via load_lora_weights: %s", fp4_path)
+                    pipe.load_lora_weights(str(fp4_path))
+                else:
+                    LOGGER.info("fp4 checkpoint available at %s (no explicit loader on pipeline)", fp4_path)
+            else:
+                LOGGER.warning("FP4 checkpoint not found at %s", fp4_path)
+
+        if hasattr(pipe, "to"):
+            pipe.to(device)
+
+        _PIPELINES[cache_key] = pipe
+        return pipe
+
+
+def _load_pipeline(output_mode: str, device: str = "cuda") -> object:
+    backend = _get_backend()
+    if backend == "diffusers":
+        return _load_diffusers_pipeline(output_mode, device=device)
+    return _load_pipelines_pipeline(output_mode, device=device)
+
+
 def warmup_pipeline(output_mode: str) -> dict[str, str]:
     pipe = _load_pipeline(output_mode)
-    return {"pipeline_class": pipe.__class__.__name__}
+    return {"pipeline_class": pipe.__class__.__name__, "backend": _get_backend()}
 
 
 def render_status_frame(text: str, width: int, height: int) -> Image.Image:
@@ -359,10 +496,50 @@ def _build_pipeline_kwargs(
         _assign_first_present(param_names, kwargs, output_path, ["output_path", "output"])
 
     images_required = "images" in params and params["images"].default is inspect.Parameter.empty
-    if images is not None and "images" in param_names:
-        kwargs["images"] = images
+    if "images" in param_names and "images" not in kwargs:
+        kwargs["images"] = images or []
     elif images_required and "images" not in kwargs:
         kwargs["images"] = []
+
+    needs_seed = any(name in param_names for name in ("seed", "random_seed", "generator"))
+    seed_value = seed if seed is not None else (random.getrandbits(31) if needs_seed else None)
+    if seed_value is not None:
+        if "generator" in param_names:
+            device = getattr(pipe, "device", "cuda")
+            generator = torch.Generator(device=device).manual_seed(seed_value)
+            kwargs["generator"] = generator
+        _assign_first_present(param_names, kwargs, seed_value, ["seed", "random_seed"])
+
+    return _filter_kwargs_for_callable(pipe.__call__, kwargs)
+
+
+def _build_diffusers_kwargs(
+    pipe: object,
+    *,
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    num_frames: int,
+    fps: int,
+    guidance_scale: float,
+    num_inference_steps: int,
+    seed: int | None,
+) -> dict[str, object]:
+    signature = inspect.signature(pipe.__call__)
+    params = signature.parameters
+    param_names = set(params.keys())
+    kwargs: dict[str, object] = {}
+
+    _assign_first_present(param_names, kwargs, prompt, ["prompt", "text"])
+    if negative_prompt:
+        _assign_first_present(param_names, kwargs, negative_prompt, ["negative_prompt"])
+    _assign_first_present(param_names, kwargs, width, ["width"])
+    _assign_first_present(param_names, kwargs, height, ["height"])
+    _assign_first_present(param_names, kwargs, num_frames, ["num_frames", "video_length", "frames"])
+    _assign_first_present(param_names, kwargs, fps, ["fps", "frame_rate"])
+    _assign_first_present(param_names, kwargs, guidance_scale, ["guidance_scale", "cfg_scale", "cfg_guidance_scale"])
+    _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
 
     needs_seed = any(name in param_names for name in ("seed", "random_seed", "generator"))
     seed_value = seed if seed is not None else (random.getrandbits(31) if needs_seed else None)
@@ -510,9 +687,123 @@ def _generate_video_chunk(
         yield frame
 
 
+def _should_retry_without_negative_prompt(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        keyword in message
+        for keyword in (
+            "negative_prompt",
+            "encoder_hidden_states",
+            "size mismatch",
+            "shape",
+            "dimension",
+        )
+    )
+
+
+def _generate_diffusers_chunk(
+    pipe: object,
+    *,
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    num_frames: int,
+    fps: int,
+    guidance_scale: float,
+    num_inference_steps: int,
+    seed: int | None,
+) -> Iterable[Image.Image]:
+    kwargs = _build_diffusers_kwargs(
+        pipe,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        num_frames=num_frames,
+        fps=fps,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        seed=seed,
+    )
+    try:
+        result = pipe(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        if kwargs.get("negative_prompt") and _should_retry_without_negative_prompt(exc):
+            LOGGER.warning("Retrying diffusers call without negative_prompt due to: %s", exc)
+            kwargs.pop("negative_prompt", None)
+            result = pipe(**kwargs)
+        else:
+            raise
+    frames = _extract_video_frames_from_pipeline_result(result)
+    for frame in frames:
+        yield frame
+
+
+def _get_pipelines_pipe_or_status(config) -> object | None:
+    try:
+        return _load_pipeline(getattr(config, "output_mode", "native"))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Failed to load pipelines backend: %s", exc)
+        return None
+
+
+def _get_diffusers_pipe_or_status(config) -> object | None:
+    try:
+        return _load_pipeline(getattr(config, "output_mode", "native"))
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Failed to load diffusers backend: %s", exc)
+        return None
+
+
 def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterable[Image.Image]:
+    backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
-    pipe = _load_pipeline(output_mode)
+    if backend == "diffusers":
+        pipe = _get_diffusers_pipe_or_status(config)
+        if pipe is None:
+            while not cancel_event.is_set():
+                yield render_status_frame("Diffusers backend unavailable", config.width, config.height)
+                time.sleep(1.0 / max(1, config.fps))
+            return
+        stage_width, stage_height = _resolve_stage_dimensions(config)
+        LOGGER.info(
+            "Fever Dream diffusers output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
+            output_mode,
+            stage_width,
+            stage_height,
+            config.width,
+            config.height,
+            config.fps,
+        )
+        while not cancel_event.is_set():
+            prompt = _prompt_drift(config.prompt)
+            chunk_seconds = 1.0
+            num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+            seed = None
+            if config.seed is not None:
+                seed = config.seed + int(time.time())
+            try:
+                frames = _generate_diffusers_chunk(
+                    pipe,
+                    prompt=prompt,
+                    negative_prompt=getattr(config, "negative_prompt", "") or "",
+                    width=stage_width,
+                    height=stage_height,
+                    num_frames=num_frames,
+                    fps=config.fps,
+                    guidance_scale=3.0 + config.dream_strength * 5.0,
+                    num_inference_steps=int(10 + config.motion * 10),
+                    seed=seed,
+                )
+                for frame in frames:
+                    yield frame
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Fever Dream diffusers generation error: %s", exc)
+                yield render_status_frame("Generation error", config.width, config.height)
+        return
+
+    pipe = _get_pipelines_pipe_or_status(config)
     if pipe is None:
         while not cancel_event.is_set():
             yield render_status_frame("LTX-2 load failed", config.width, config.height)
@@ -560,8 +851,61 @@ def generate_mood_mirror_frames(
     latest_camera_state: Callable[[], tuple[np.ndarray | None, dict | None]],
     cancel_event: threading.Event,
 ) -> Iterable[Image.Image]:
+    backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
-    pipe = _load_pipeline(output_mode)
+    if backend == "diffusers":
+        pipe = _get_diffusers_pipe_or_status(config)
+        if pipe is None:
+            while not cancel_event.is_set():
+                yield render_status_frame("Diffusers backend unavailable", config.width, config.height)
+                time.sleep(1.0 / max(1, config.fps))
+            return
+        stage_width, stage_height = _resolve_stage_dimensions(config)
+        LOGGER.info(
+            "Mood Mirror diffusers output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
+            output_mode,
+            stage_width,
+            stage_height,
+            config.width,
+            config.height,
+            config.fps,
+        )
+        while not cancel_event.is_set():
+            camera_frame, mood_state = latest_camera_state()
+            if camera_frame is None:
+                yield render_status_frame("Waiting for camera feed...", config.width, config.height)
+                time.sleep(1.0 / max(1, config.fps))
+                continue
+            prompt = config.base_prompt
+            if mood_state:
+                mood_prompt = mood_state.get("prompt_hint") or ""
+                prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
+            chunk_seconds = 1.0
+            num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+            seed = None
+            if config.seed is not None:
+                seed = config.seed + int(time.time())
+            try:
+                frames = _generate_diffusers_chunk(
+                    pipe,
+                    prompt=prompt,
+                    negative_prompt=getattr(config, "negative_prompt", "") or "",
+                    width=stage_width,
+                    height=stage_height,
+                    num_frames=num_frames,
+                    fps=config.fps,
+                    guidance_scale=3.0 + config.dream_strength * 4.0,
+                    num_inference_steps=int(10 + config.motion * 10),
+                    seed=seed,
+                )
+                for frame in frames:
+                    yield frame
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
+                yield render_status_frame("Generation error", config.width, config.height)
+        return
+
+    pipe = _get_pipelines_pipe_or_status(config)
     if pipe is None:
         while not cancel_event.is_set():
             yield render_status_frame("LTX-2 load failed", config.width, config.height)
