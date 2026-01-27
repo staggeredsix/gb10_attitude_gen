@@ -10,8 +10,12 @@ LTX2_MODEL_ID="${LTX2_MODEL_ID:-Lightricks/LTX-2}"
 LTX2_FP4_FILE="${LTX2_FP4_FILE:-ltx-2-19b-dev-fp4.safetensors}"
 LTX2_SPATIAL_UPSCALER_FILE="${LTX2_SPATIAL_UPSCALER_FILE:-ltx-2-spatial-upscaler-x2-1.0.safetensors}"
 LTX2_TEMPORAL_UPSCALER_FILE="${LTX2_TEMPORAL_UPSCALER_FILE:-ltx-2-temporal-upscaler-x2-1.0.safetensors}"
-GEMMA_MODEL_ID="${GEMMA_MODEL_ID:-google/gemma-3-12b}"
+GEMMA_MODEL_ID="${GEMMA_MODEL_ID:-google/gemma-3-12b-it}"
 GEMMA_DIR="${GEMMA_DIR:-${MODELS_DIR}/gemma}"
+
+# Optional: set your token here, or export HF_TOKEN=... in your shell.
+HF_TOKEN_DEFAULT="${HF_TOKEN_DEFAULT:-}"
+HF_TOKEN="${HF_TOKEN:-${HF_TOKEN_DEFAULT}}"
 
 MODE="${1:-all}"
 
@@ -21,6 +25,7 @@ export HF_HOME="${HF_HOME_DIR}"
 export HUGGINGFACE_HUB_CACHE="${HUB_CACHE_DIR}"
 export LTX2_MODEL_ID LTX2_FP4_FILE LTX2_SPATIAL_UPSCALER_FILE LTX2_TEMPORAL_UPSCALER_FILE
 export GEMMA_MODEL_ID GEMMA_DIR
+export HF_TOKEN
 
 usage() {
   cat <<'USAGE'
@@ -130,7 +135,7 @@ PY
 
 download_gemma() {
   echo "Downloading Gemma (${GEMMA_MODEL_ID}) into ${GEMMA_DIR}..."
-  if ! python3 - <<'PY'; then
+  if ! python3 - <<'PY'
 import os, sys
 
 try:
@@ -146,8 +151,10 @@ local_dir = os.environ["GEMMA_DIR"]
 allow_patterns = [
     "config.json",
     "generation_config.json",
-    "tokenizer.*",
+    "tokenizer*",
     "special_tokens_map.json",
+    "preprocessor_config.json",
+    "*.json",
     "*.safetensors",
     "*.bin",
     "*.model",
@@ -167,9 +174,23 @@ if missing:
     print("Gemma download missing required files:", missing, file=sys.stderr)
     raise SystemExit(2)
 
+preprocessor_found = False
+for base, _, files in os.walk(local_dir):
+    if "preprocessor_config.json" in files:
+        preprocessor_found = True
+        break
+if not preprocessor_found:
+    print(
+        "Gemma download missing preprocessor_config.json. "
+        "Re-run ./download_model.sh gemma (it must include preprocessor_config.json).",
+        file=sys.stderr,
+    )
+    raise SystemExit(3)
+
 print("OK:")
 print(f"  gemma_dir:    {local_dir}")
 print(f"  model_id:     {model_id}")
+print("  preprocessor_config.json: found")
 PY
   then
     if [[ -z "${HF_TOKEN:-}" ]]; then

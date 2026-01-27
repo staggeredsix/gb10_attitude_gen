@@ -35,6 +35,7 @@ class LTX2Artifacts:
     spatial_upsampler_path: str | None
     distilled_lora_path: str | None
     distilled_lora_strength: float
+    loras: list[dict[str, object]]
 
 
 def _env_float(name: str, default: float) -> float:
@@ -48,6 +49,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _has_preprocessor_config(root: pathlib.Path) -> bool:
+    if not root.exists():
+        return False
+    if (root / "preprocessor_config.json").is_file():
+        return True
+    return any(root.rglob("preprocessor_config.json"))
+
+
 def validate_gemma_root(path: str) -> tuple[bool, str]:
     if not path:
         return False, "LTX2_GEMMA_ROOT is not set."
@@ -57,6 +66,12 @@ def validate_gemma_root(path: str) -> tuple[bool, str]:
     config_path = root / "config.json"
     if not config_path.is_file():
         return False, f"Missing config.json under: {root}"
+    if not _has_preprocessor_config(root):
+        return (
+            False,
+            "Missing preprocessor_config.json. Re-run ./download_model.sh gemma "
+            "(it must include preprocessor_config.json).",
+        )
     tokenizer_candidates = [
         root / "tokenizer.json",
         root / "tokenizer.model",
@@ -127,8 +142,9 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
             f"download_model.sh ({DEFAULT_GEMMA_MODEL_ID}). ({gemma_reason})"
         )
     spatial_upsampler_path = _require_env_path("LTX2_SPATIAL_UPSAMPLER_PATH", required=output_mode == "upscaled")
-    distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=output_mode == "upscaled")
+    distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=False)
     distilled_lora_strength = _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6)
+    loras: list[dict[str, object]] = []
 
     return LTX2Artifacts(
         checkpoint_path=checkpoint_path,
@@ -136,6 +152,7 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
         spatial_upsampler_path=spatial_upsampler_path,
         distilled_lora_path=distilled_lora_path,
         distilled_lora_strength=distilled_lora_strength,
+        loras=loras,
     )
 
 
@@ -149,7 +166,9 @@ def log_backend_configuration(output_mode: str | None = None) -> None:
         LOGGER.warning("LTX-2 checkpoint resolution failed: %s", exc)
     gemma_root = _resolve_gemma_root()
     gemma_ok, gemma_reason = validate_gemma_root(gemma_root)
+    gemma_has_preprocessor = _has_preprocessor_config(pathlib.Path(gemma_root).expanduser())
     LOGGER.info("LTX-2 gemma_root=%s", gemma_root)
+    LOGGER.info("LTX-2 gemma_preprocessor_config=%s", gemma_has_preprocessor)
     LOGGER.info("LTX-2 gemma_model_id=%s", DEFAULT_GEMMA_MODEL_ID)
     if not gemma_ok:
         LOGGER.warning(
@@ -171,13 +190,28 @@ def _filter_kwargs_for_callable(func: Callable[..., object], kwargs: dict[str, o
     return {key: value for key, value in kwargs.items() if key in allowed}
 
 
-def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object]) -> object:
+def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object], *, output_mode: str) -> object:
     if hasattr(pipe_cls, "from_pretrained"):
         factory = getattr(pipe_cls, "from_pretrained")
-        filtered = _filter_kwargs_for_callable(factory, kwargs)
-        return factory(**filtered)
-    filtered = _filter_kwargs_for_callable(pipe_cls, kwargs)
-    return pipe_cls(**filtered)
+        signature = inspect.signature(factory)
+    else:
+        factory = pipe_cls
+        signature = inspect.signature(pipe_cls)
+
+    init_kwargs = dict(kwargs)
+    params = signature.parameters
+
+    if "loras" in params and "loras" not in init_kwargs:
+        init_kwargs["loras"] = []
+    if "distilled_lora" in params and output_mode == "upscaled" and not init_kwargs.get("distilled_lora"):
+        raise RuntimeError(
+            "Upscaled output requires a distilled LoRA. "
+            "Set LTX2_DISTILLED_LORA_PATH and LTX2_DISTILLED_LORA_STRENGTH."
+        )
+
+    filtered = _filter_kwargs_for_callable(factory, init_kwargs)
+    LOGGER.info("Initializing %s with keys=%s", pipe_cls.__name__, sorted(filtered.keys()))
+    return factory(**filtered)
 
 
 def _load_pipeline(output_mode: str, device: str = "cuda"):
@@ -191,12 +225,18 @@ def _load_pipeline(output_mode: str, device: str = "cuda"):
 
         if output_mode == "upscaled":
             pipe_cls = TI2VidTwoStagesPipeline
+            distilled_lora = None
+            if artifacts.distilled_lora_path:
+                distilled_lora = {
+                    "path": artifacts.distilled_lora_path,
+                    "strength": artifacts.distilled_lora_strength,
+                }
             init_kwargs = {
                 "checkpoint_path": artifacts.checkpoint_path,
                 "gemma_root": artifacts.gemma_root,
                 "spatial_upsampler_path": artifacts.spatial_upsampler_path,
-                "distilled_lora_path": artifacts.distilled_lora_path,
-                "distilled_lora_strength": artifacts.distilled_lora_strength,
+                "distilled_lora": distilled_lora,
+                "loras": artifacts.loras,
                 "torch_dtype": dtype,
             }
         else:
@@ -204,13 +244,18 @@ def _load_pipeline(output_mode: str, device: str = "cuda"):
             init_kwargs = {
                 "checkpoint_path": artifacts.checkpoint_path,
                 "gemma_root": artifacts.gemma_root,
+                "loras": artifacts.loras,
                 "torch_dtype": dtype,
             }
 
         LOGGER.info("Loading LTX-2 pipeline: mode=%s class=%s", output_mode, pipe_cls.__name__)
-        pipe = _instantiate_pipeline(pipe_cls, init_kwargs)
+        pipe = _instantiate_pipeline(pipe_cls, init_kwargs, output_mode=output_mode)
         if hasattr(pipe, "to"):
             pipe.to(device)
+        call_signature = inspect.signature(pipe.__call__)
+        supports_output_path = any(name in call_signature.parameters for name in ("output_path", "output"))
+        LOGGER.info("LTX-2 pipeline call signature: %s", call_signature)
+        LOGGER.info("LTX-2 pipeline supports output_path=%s", supports_output_path)
 
         _PIPELINES[cache_key] = pipe
         return pipe
@@ -284,7 +329,7 @@ def _build_pipeline_kwargs(
     guidance_scale: float,
     num_inference_steps: int,
     seed: int | None,
-    output_path: str,
+    output_path: str | None,
     images: list[tuple[str, int, float]] | None = None,
 ) -> dict[str, object]:
     signature = inspect.signature(pipe.__call__)
@@ -300,9 +345,8 @@ def _build_pipeline_kwargs(
     _assign_first_present(params, kwargs, fps, ["fps", "frame_rate"])
     _assign_first_present(params, kwargs, guidance_scale, ["guidance_scale", "cfg_scale"])
     _assign_first_present(params, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
-    if not any(name in params for name in ("output_path", "output")):
-        raise RuntimeError("LTX-2 pipeline does not accept an output_path argument.")
-    _assign_first_present(params, kwargs, output_path, ["output_path", "output"])
+    if output_path and any(name in params for name in ("output_path", "output")):
+        _assign_first_present(params, kwargs, output_path, ["output_path", "output"])
 
     if images is not None and "images" in params:
         kwargs["images"] = images
@@ -340,6 +384,72 @@ def _yield_video_frames(video_path: str) -> Iterable[Image.Image]:
         cap.release()
 
 
+def _decode_video_to_frames(video_path: str) -> list[Image.Image]:
+    return list(_yield_video_frames(video_path))
+
+
+def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
+    return pipe(**kwargs)
+
+
+def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Image]:
+    def _as_frames(obj: object) -> list[Image.Image] | None:
+        if obj is None:
+            return None
+        if isinstance(obj, Image.Image):
+            return [obj]
+        if isinstance(obj, np.ndarray):
+            return [Image.fromarray(obj)]
+        if isinstance(obj, (str, os.PathLike, pathlib.Path)):
+            path = pathlib.Path(obj)
+            if path.exists() and path.is_file():
+                return _decode_video_to_frames(str(path))
+            return None
+        if isinstance(obj, list):
+            frames: list[Image.Image] = []
+            for item in obj:
+                item_frames = _as_frames(item)
+                if item_frames:
+                    frames.extend(item_frames)
+                elif isinstance(item, np.ndarray):
+                    frames.append(Image.fromarray(item))
+                elif isinstance(item, Image.Image):
+                    frames.append(item)
+            return frames or None
+        if isinstance(obj, dict):
+            for key in ("frames", "images", "video", "videos", "output", "result"):
+                if key in obj:
+                    frames = _as_frames(obj[key])
+                    if frames:
+                        return frames
+            for value in obj.values():
+                frames = _as_frames(value)
+                if frames:
+                    return frames
+            return None
+        for attr in ("frames", "images", "video", "videos", "output", "result"):
+            if hasattr(obj, attr):
+                frames = _as_frames(getattr(obj, attr))
+                if frames:
+                    return frames
+        return None
+
+    frames = _as_frames(result)
+    if frames:
+        return frames
+
+    result_type = type(result).__name__
+    dict_keys: list[str] = []
+    attrs: list[str] = []
+    if isinstance(result, dict):
+        dict_keys = sorted(result.keys())
+    else:
+        attrs = [name for name in ("frames", "images", "video", "videos", "output", "result") if hasattr(result, name)]
+    raise RuntimeError(
+        f"Could not extract frames from pipeline result type={result_type} keys={dict_keys} attrs={attrs}"
+    )
+
+
 def _generate_video_chunk(
     pipe: object,
     *,
@@ -353,7 +463,9 @@ def _generate_video_chunk(
     seed: int | None,
     images: list[tuple[str, int, float]] | None = None,
 ) -> Iterable[Image.Image]:
-    output_path = f"/tmp/ltx_out_{uuid.uuid4().hex}.mp4"
+    signature = inspect.signature(pipe.__call__)
+    supports_output_path = any(name in signature.parameters for name in ("output_path", "output"))
+    output_path = f"/tmp/ltx_out_{uuid.uuid4().hex}.mp4" if supports_output_path else None
     kwargs = _build_pipeline_kwargs(
         pipe,
         prompt=prompt,
@@ -367,15 +479,20 @@ def _generate_video_chunk(
         output_path=output_path,
         images=images,
     )
-    pipe(**kwargs)
-    try:
-        for frame in _yield_video_frames(output_path):
-            yield frame
-    finally:
+    result = _call_ltx_pipeline(pipe, kwargs)
+    if output_path and pathlib.Path(output_path).is_file():
         try:
-            os.remove(output_path)
-        except OSError:
-            LOGGER.warning("Failed to remove temporary video: %s", output_path)
+            for frame in _yield_video_frames(output_path):
+                yield frame
+        finally:
+            try:
+                os.remove(output_path)
+            except OSError:
+                LOGGER.warning("Failed to remove temporary video: %s", output_path)
+        return
+    frames = _extract_video_frames_from_pipeline_result(result)
+    for frame in frames:
+        yield frame
 
 
 def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterable[Image.Image]:
