@@ -254,8 +254,15 @@ def _load_pipeline(output_mode: str, device: str = "cuda"):
             pipe.to(device)
         call_signature = inspect.signature(pipe.__call__)
         supports_output_path = any(name in call_signature.parameters for name in ("output_path", "output"))
+        required_params = [
+            name
+            for name, param in call_signature.parameters.items()
+            if param.default is inspect.Parameter.empty
+            and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        ]
         LOGGER.info("LTX-2 pipeline call signature: %s", call_signature)
         LOGGER.info("LTX-2 pipeline supports output_path=%s", supports_output_path)
+        LOGGER.info("LTX-2 pipeline required params=%s", required_params)
 
         _PIPELINES[cache_key] = pipe
         return pipe
@@ -322,6 +329,7 @@ def _build_pipeline_kwargs(
     pipe: object,
     *,
     prompt: str,
+    negative_prompt: str,
     width: int,
     height: int,
     num_frames: int,
@@ -333,32 +341,37 @@ def _build_pipeline_kwargs(
     images: list[tuple[str, int, float]] | None = None,
 ) -> dict[str, object]:
     signature = inspect.signature(pipe.__call__)
-    params = set(signature.parameters.keys())
+    params = signature.parameters
+    param_names = set(params.keys())
     kwargs: dict[str, object] = {}
 
-    if not any(name in params for name in ("prompt", "text")):
+    if not any(name in param_names for name in ("prompt", "text")):
         raise RuntimeError("LTX-2 pipeline does not accept a prompt argument.")
-    _assign_first_present(params, kwargs, prompt, ["prompt", "text"])
-    _assign_first_present(params, kwargs, width, ["width"])
-    _assign_first_present(params, kwargs, height, ["height"])
-    _assign_first_present(params, kwargs, num_frames, ["num_frames", "video_length", "frames"])
-    _assign_first_present(params, kwargs, fps, ["fps", "frame_rate"])
-    _assign_first_present(params, kwargs, guidance_scale, ["guidance_scale", "cfg_scale"])
-    _assign_first_present(params, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
-    if output_path and any(name in params for name in ("output_path", "output")):
-        _assign_first_present(params, kwargs, output_path, ["output_path", "output"])
+    _assign_first_present(param_names, kwargs, prompt, ["prompt", "text"])
+    _assign_first_present(param_names, kwargs, negative_prompt, ["negative_prompt"])
+    _assign_first_present(param_names, kwargs, width, ["width"])
+    _assign_first_present(param_names, kwargs, height, ["height"])
+    _assign_first_present(param_names, kwargs, num_frames, ["num_frames", "video_length", "frames"])
+    _assign_first_present(param_names, kwargs, fps, ["fps", "frame_rate"])
+    _assign_first_present(param_names, kwargs, guidance_scale, ["guidance_scale", "cfg_scale", "cfg_guidance_scale"])
+    _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
+    if output_path and any(name in param_names for name in ("output_path", "output")):
+        _assign_first_present(param_names, kwargs, output_path, ["output_path", "output"])
 
-    if images is not None and "images" in params:
+    images_required = "images" in params and params["images"].default is inspect.Parameter.empty
+    if images is not None and "images" in param_names:
         kwargs["images"] = images
+    elif images_required and "images" not in kwargs:
+        kwargs["images"] = []
 
-    if seed is not None:
-        generator = None
-        if "generator" in params:
+    needs_seed = any(name in param_names for name in ("seed", "random_seed", "generator"))
+    seed_value = seed if seed is not None else (random.getrandbits(31) if needs_seed else None)
+    if seed_value is not None:
+        if "generator" in param_names:
             device = getattr(pipe, "device", "cuda")
-            generator = torch.Generator(device=device).manual_seed(seed)
+            generator = torch.Generator(device=device).manual_seed(seed_value)
             kwargs["generator"] = generator
-        else:
-            _assign_first_present(params, kwargs, seed, ["seed", "random_seed"])
+        _assign_first_present(param_names, kwargs, seed_value, ["seed", "random_seed"])
 
     return _filter_kwargs_for_callable(pipe.__call__, kwargs)
 
@@ -454,6 +467,7 @@ def _generate_video_chunk(
     pipe: object,
     *,
     prompt: str,
+    negative_prompt: str,
     width: int,
     height: int,
     num_frames: int,
@@ -469,6 +483,7 @@ def _generate_video_chunk(
     kwargs = _build_pipeline_kwargs(
         pipe,
         prompt=prompt,
+        negative_prompt=negative_prompt,
         width=width,
         height=height,
         num_frames=num_frames,
@@ -524,6 +539,7 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
             frames = _generate_video_chunk(
                 pipe,
                 prompt=prompt,
+                negative_prompt=getattr(config, "negative_prompt", "") or "",
                 width=stage_width,
                 height=stage_height,
                 num_frames=num_frames,
@@ -583,6 +599,7 @@ def generate_mood_mirror_frames(
             frames = _generate_video_chunk(
                 pipe,
                 prompt=prompt,
+                negative_prompt=getattr(config, "negative_prompt", "") or "",
                 width=stage_width,
                 height=stage_height,
                 num_frames=num_frames,

@@ -59,6 +59,7 @@ if DEFAULT_OUTPUT_MODE not in {"native", "upscaled"}:
 class RunConfig(BaseModel):
     mode: Literal["fever", "mood"] = "fever"
     prompt: str = Field("surreal dreamscape, liquid light, ethereal forms", min_length=1)
+    negative_prompt: str = ""
     width: int = DEFAULT_WIDTH
     height: int = DEFAULT_HEIGHT
     fps: int = DEFAULT_FPS
