@@ -55,6 +55,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_fps(name: str, default: int) -> int:
+    value = _env_int(name, default)
+    return max(1, min(value, 60))
+
+
 DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
 DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
 DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
@@ -87,6 +92,7 @@ class StreamState:
     thread: threading.Thread
     last_frame: bytes | None = None
     status: str = "starting"
+    stream_fps: int = 30
 
 
 class StreamManager:
@@ -104,8 +110,12 @@ class StreamManager:
             self._streams = {}
             self._cancel_event = threading.Event()
             for stream_id in range(config.streams):
-                stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=2)
-                stream = StreamState(queue=stream_queue, thread=threading.Thread())
+                stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+                stream = StreamState(
+                    queue=stream_queue,
+                    thread=threading.Thread(),
+                    stream_fps=_env_fps("LTX2_STREAM_FPS", 30),
+                )
                 thread = threading.Thread(
                     target=self._run_stream,
                     args=(stream_id, config, stream, latest_camera_state, self._cancel_event),
@@ -399,23 +409,25 @@ def stream(stream_id: int) -> StreamingResponse:
     boundary = "frame"
 
     def generator() -> bytes:
+        interval = 1.0 / max(1, stream_state.stream_fps)
         while True:
             frame = stream_state.last_frame
-            try:
-                frame = stream_state.queue.get(timeout=1.0)
-                stream_state.last_frame = frame
-            except queue.Empty:
-                if frame is None:
-                    placeholder = render_status_frame("Waiting for frames...", current_config.width, current_config.height)
-                    frame = _encode_frame(placeholder)
+            while True:
+                try:
+                    frame = stream_state.queue.get_nowait()
                     stream_state.last_frame = frame
+                except queue.Empty:
+                    break
             if frame is None:
-                continue
+                placeholder = render_status_frame("Waiting for frames...", current_config.width, current_config.height)
+                frame = _encode_frame(placeholder)
+                stream_state.last_frame = frame
             yield (
                 b"--" + boundary.encode() + b"\r\n"
                 b"Content-Type: image/jpeg\r\n"
                 b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
             )
+            time.sleep(interval)
 
     return StreamingResponse(generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 

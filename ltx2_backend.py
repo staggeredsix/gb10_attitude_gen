@@ -8,6 +8,7 @@ import random
 import threading
 import time
 import uuid
+from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -66,6 +67,29 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float_optional(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        LOGGER.warning("Invalid float for %s=%s; ignoring.", name, value)
+        return None
+
+
+def _env_int_clamped(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        parsed = default
+    return max(min_value, min(parsed, max_value))
 
 
 def _log_vram(prefix: str) -> None:
@@ -139,7 +163,11 @@ def _resolve_checkpoint_path() -> str:
         else:
             return str(path)
 
-    fp8_file = os.getenv("LTX2_FP8_FILE", DEFAULT_FP8_FILE)
+    use_distilled = os.getenv("LTX2_USE_DISTILLED", "0").lower() in {"1", "true", "yes", "on"}
+    fp8_file = os.getenv(
+        "LTX2_FP8_FILE",
+        "ltx-2-19b-distilled-fp8.safetensors" if use_distilled else DEFAULT_FP8_FILE,
+    )
     snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
     if snapshot_dir:
         snapshot_path = pathlib.Path(snapshot_dir).expanduser()
@@ -183,6 +211,7 @@ def _resolve_checkpoint_path() -> str:
             reverse=True,
         )
         if candidates:
+            LOGGER.info("LTX-2 checkpoint selected=%s", candidates[0])
             return str(candidates[0])
 
     raise RuntimeError(
@@ -505,6 +534,9 @@ def _resolve_stage_dimensions(config) -> tuple[int, int]:
     output_mode = getattr(config, "output_mode", "native")
     width = config.width
     height = config.height
+    if os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"} and output_mode == "native":
+        width = _env_int_clamped("LTX2_REALTIME_WIDTH", 640, min_value=64, max_value=4096)
+        height = _env_int_clamped("LTX2_REALTIME_HEIGHT", 352, min_value=64, max_value=4096)
     if output_mode == "upscaled":
         stage_width = width // 2
         stage_height = height // 2
@@ -643,18 +675,76 @@ def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
 
 
 def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Image]:
+    if os.getenv("LTX2_LOG_PIPE_RESULT") == "1":
+        try:
+            if isinstance(result, tuple):
+                elem_types = [type(item).__name__ for item in result]
+                LOGGER.info("LTX2 pipe result=tuple types=%s", elem_types)
+                for idx, item in enumerate(result):
+                    if torch.is_tensor(item):
+                        LOGGER.info(
+                            "LTX2 pipe result[%s] tensor shape=%s dtype=%s",
+                            idx,
+                            tuple(item.shape),
+                            item.dtype,
+                        )
+            elif torch.is_tensor(result):
+                LOGGER.info(
+                    "LTX2 pipe result tensor shape=%s dtype=%s",
+                    tuple(result.shape),
+                    result.dtype,
+                )
+            else:
+                LOGGER.info("LTX2 pipe result type=%s", type(result).__name__)
+        except Exception:  # noqa: BLE001
+            LOGGER.exception("Failed to log pipeline result details")
+
     def _as_frames(obj: object) -> list[Image.Image] | None:
+        def _tensor_to_images(tensor: torch.Tensor) -> list[Image.Image]:
+            if tensor.is_cuda:
+                tensor = tensor.detach().cpu()
+            else:
+                tensor = tensor.detach()
+            if tensor.dim() == 4:
+                # (F,C,H,W) or (F,H,W,C)
+                if tensor.shape[1] in (1, 3, 4):
+                    frames = [tensor[i] for i in range(tensor.shape[0])]
+                else:
+                    frames = [tensor[i] for i in range(tensor.shape[0])]
+                return sum((_tensor_to_images(frame) for frame in frames), [])
+            if tensor.dim() == 3:
+                if tensor.shape[0] in (1, 3, 4):
+                    tensor = tensor.permute(1, 2, 0)
+                # else assume HWC already
+            elif tensor.dim() == 2:
+                tensor = tensor.unsqueeze(-1)
+            elif tensor.dim() == 1:
+                return []
+
+            array = tensor
+            if array.dtype.is_floating_point:
+                array = array.clamp(0, 1) * 255.0
+            array = array.clamp(0, 255).to(torch.uint8)
+            np_img = array.numpy()
+            if np_img.ndim == 3 and np_img.shape[2] == 1:
+                np_img = np_img[:, :, 0]
+            return [Image.fromarray(np_img)]
+
         if obj is None:
             return None
         if isinstance(obj, Image.Image):
             return [obj]
         if isinstance(obj, np.ndarray):
             return [Image.fromarray(obj)]
+        if torch.is_tensor(obj):
+            return _tensor_to_images(obj)
         if isinstance(obj, (str, os.PathLike, pathlib.Path)):
             path = pathlib.Path(obj)
             if path.exists() and path.is_file():
                 return _decode_video_to_frames(str(path))
             return None
+        if isinstance(obj, tuple) and obj:
+            return _as_frames(obj[0])
         if isinstance(obj, list):
             frames: list[Image.Image] = []
             for item in obj:
@@ -665,6 +755,25 @@ def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Ima
                     frames.append(Image.fromarray(item))
                 elif isinstance(item, Image.Image):
                     frames.append(item)
+            return frames or None
+        if isinstance(obj, IterableABC) and not isinstance(
+            obj,
+            (
+                dict,
+                str,
+                bytes,
+                bytearray,
+                np.ndarray,
+                Image.Image,
+                os.PathLike,
+                pathlib.Path,
+            ),
+        ):
+            frames: list[Image.Image] = []
+            for item in obj:
+                item_frames = _as_frames(item)
+                if item_frames:
+                    frames.extend(item_frames)
             return frames or None
         if isinstance(obj, dict):
             for key in ("frames", "images", "video", "videos", "output", "result"):
@@ -683,6 +792,11 @@ def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Ima
                 if frames:
                     return frames
         return None
+
+    if isinstance(result, (tuple, list)) and len(result) >= 1:
+        frames = _as_frames(result[0])
+        if frames:
+            return frames
 
     frames = _as_frames(result)
     if frames:
@@ -842,22 +956,34 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
         )
         while not cancel_event.is_set():
             prompt = _prompt_drift(config.prompt)
-            chunk_seconds = 1.0
-            num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
+            min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
+            num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
             seed = None
             if config.seed is not None:
                 seed = config.seed + int(time.time())
             try:
+                realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+                guidance_scale = 3.0 + config.dream_strength * 5.0
+                if realtime:
+                    guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+                if realtime and guidance_scale <= 1.0:
+                    negative_prompt = ""
+                else:
+                    negative_prompt = getattr(config, "negative_prompt", "") or ""
+                num_inference_steps = int(10 + config.motion * 10)
+                if realtime:
+                    num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
                 frames = _generate_diffusers_chunk(
                     pipe,
                     prompt=prompt,
-                    negative_prompt=getattr(config, "negative_prompt", "") or "",
+                    negative_prompt=negative_prompt,
                     width=stage_width,
                     height=stage_height,
                     num_frames=num_frames,
                     fps=config.fps,
-                    guidance_scale=3.0 + config.dream_strength * 5.0,
-                    num_inference_steps=int(10 + config.motion * 10),
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_inference_steps,
                     seed=seed,
                 )
                 for frame in frames:
@@ -885,22 +1011,34 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
     )
     while not cancel_event.is_set():
         prompt = _prompt_drift(config.prompt)
-        chunk_seconds = 1.0
-        num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
+        min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
+        num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
         seed = None
         if config.seed is not None:
             seed = config.seed + int(time.time())
         try:
+            realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+            guidance_scale = 3.0 + config.dream_strength * 5.0
+            if realtime:
+                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+            if realtime and guidance_scale <= 1.0:
+                negative_prompt = ""
+            else:
+                negative_prompt = getattr(config, "negative_prompt", "") or ""
+            num_inference_steps = int(10 + config.motion * 10)
+            if realtime:
+                num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
             frames = _generate_video_chunk(
                 pipe,
                 prompt=prompt,
-                negative_prompt=getattr(config, "negative_prompt", "") or "",
+                negative_prompt=negative_prompt,
                 width=stage_width,
                 height=stage_height,
                 num_frames=num_frames,
                 fps=config.fps,
-                guidance_scale=3.0 + config.dream_strength * 5.0,
-                num_inference_steps=int(10 + config.motion * 10),
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
                 seed=seed,
             )
             for frame in frames:
@@ -944,22 +1082,34 @@ def generate_mood_mirror_frames(
             if mood_state:
                 mood_prompt = mood_state.get("prompt_hint") or ""
                 prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-            chunk_seconds = 1.0
-            num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
+            min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
+            num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
             seed = None
             if config.seed is not None:
                 seed = config.seed + int(time.time())
             try:
+                realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+                guidance_scale = 3.0 + config.dream_strength * 4.0
+                if realtime:
+                    guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+                if realtime and guidance_scale <= 1.0:
+                    negative_prompt = ""
+                else:
+                    negative_prompt = getattr(config, "negative_prompt", "") or ""
+                num_inference_steps = int(10 + config.motion * 10)
+                if realtime:
+                    num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
                 frames = _generate_diffusers_chunk(
                     pipe,
                     prompt=prompt,
-                    negative_prompt=getattr(config, "negative_prompt", "") or "",
+                    negative_prompt=negative_prompt,
                     width=stage_width,
                     height=stage_height,
                     num_frames=num_frames,
                     fps=config.fps,
-                    guidance_scale=3.0 + config.dream_strength * 4.0,
-                    num_inference_steps=int(10 + config.motion * 10),
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_inference_steps,
                     seed=seed,
                 )
                 for frame in frames:
@@ -995,8 +1145,9 @@ def generate_mood_mirror_frames(
         if mood_state:
             mood_prompt = mood_state.get("prompt_hint") or ""
             prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-        chunk_seconds = 1.0
-        num_frames = _adjust_num_frames(max(1, int(chunk_seconds * config.fps)))
+        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
+        min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
+        num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
         seed = None
         if config.seed is not None:
             seed = config.seed + int(time.time())
@@ -1004,16 +1155,27 @@ def generate_mood_mirror_frames(
         image_path = _write_temp_image(camera_frame)
         images = [(image_path, 0, strength)]
         try:
+            realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+            guidance_scale = 3.0 + config.dream_strength * 4.0
+            if realtime:
+                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+            if realtime and guidance_scale <= 1.0:
+                negative_prompt = ""
+            else:
+                negative_prompt = getattr(config, "negative_prompt", "") or ""
+            num_inference_steps = int(10 + config.motion * 10)
+            if realtime:
+                num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
             frames = _generate_video_chunk(
                 pipe,
                 prompt=prompt,
-                negative_prompt=getattr(config, "negative_prompt", "") or "",
+                negative_prompt=negative_prompt,
                 width=stage_width,
                 height=stage_height,
                 num_frames=num_frames,
                 fps=config.fps,
-                guidance_scale=3.0 + config.dream_strength * 4.0,
-                num_inference_steps=int(10 + config.motion * 10),
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
                 seed=seed,
                 images=images,
             )
