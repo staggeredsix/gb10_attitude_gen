@@ -29,6 +29,7 @@ DEFAULT_GEMMA_ROOT = "/models/gemma"
 DEFAULT_BACKEND = "pipelines"
 DEFAULT_LTX2_MODEL_ID = "Lightricks/LTX-2"
 DEFAULT_FP4_FILE = "ltx-2-19b-dev-fp4.safetensors"
+DEFAULT_FP8_FILE = "ltx-2-19b-dev-fp8.safetensors"
 
 
 @dataclass(frozen=True)
@@ -118,8 +119,39 @@ def _resolve_checkpoint_path() -> str:
     if env_value:
         path = pathlib.Path(env_value).expanduser()
         if not path.exists():
-            raise RuntimeError(f"LTX2_CHECKPOINT_PATH does not exist: {path}")
-        return str(path)
+            LOGGER.warning(
+                "LTX2_CHECKPOINT_PATH does not exist at %s; falling back to fp8 auto-discovery.",
+                path,
+            )
+        else:
+            return str(path)
+
+    fp8_file = os.getenv("LTX2_FP8_FILE", DEFAULT_FP8_FILE)
+    snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
+    if snapshot_dir:
+        snapshot_path = pathlib.Path(snapshot_dir).expanduser()
+        if snapshot_path.exists():
+            snapshots_root = snapshot_path / "snapshots"
+            candidate_roots: list[pathlib.Path] = []
+            if snapshots_root.is_dir():
+                candidate_roots.extend(
+                    sorted(
+                        (p for p in snapshots_root.iterdir() if p.is_dir()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            candidate_roots.append(snapshot_path)
+
+            for root in candidate_roots:
+                candidate = root / fp8_file
+                if candidate.is_file():
+                    return str(candidate)
+        else:
+            LOGGER.warning(
+                "LTX2_SNAPSHOT_DIR does not exist at %s; falling back to cache search.",
+                snapshot_path,
+            )
 
     cache_roots = [
         os.getenv("HUGGINGFACE_HUB_CACHE"),
@@ -133,7 +165,7 @@ def _resolve_checkpoint_path() -> str:
         repo_root = root_path / "models--Lightricks--LTX-2"
         search_root = repo_root if repo_root.exists() else root_path
         candidates = sorted(
-            search_root.rglob("*fp8*.safetensors"),
+            search_root.rglob(fp8_file),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -141,8 +173,8 @@ def _resolve_checkpoint_path() -> str:
             return str(candidates[0])
 
     raise RuntimeError(
-        "LTX2_CHECKPOINT_PATH is not set and no fp8 checkpoint was found in cache. "
-        "Set LTX2_CHECKPOINT_PATH to the fp8 checkpoint file path."
+        "No fp8 checkpoint could be resolved. "
+        "Set LTX2_CHECKPOINT_PATH explicitly or set LTX2_SNAPSHOT_DIR and LTX2_FP8_FILE."
     )
 
 

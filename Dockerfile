@@ -24,12 +24,10 @@ RUN python3 -m pip install --upgrade pip \
 
 # Clone LTX-2 monorepo and install subpackages WITHOUT deps (prevents torch downgrade/replacement)
 RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2 \
-    && python3 -m pip install --no-deps -e /app/LTX-2/packages/ltx-core \
-    && python3 -m pip install --no-deps -e /app/LTX-2/packages/ltx-pipelines \
-    && python3 - <<'PY'
-import torch
-print("Torch kept:", torch.__version__)
-PY
+    && python3 -m pip install -e /app/LTX-2/packages/ltx-core \
+    && python3 -m pip install -e /app/LTX-2/packages/ltx-pipelines 
+
+RUN pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
 
 VOLUME ["/models"]
 
