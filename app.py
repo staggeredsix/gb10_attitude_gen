@@ -48,6 +48,13 @@ def _env_str(name: str, default: str) -> str:
     return value.strip() if value is not None else default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
 DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
 DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
@@ -127,6 +134,13 @@ class StreamManager:
         stream.last_frame = _encode_frame(render_status_frame(status_text, config.width, config.height))
         _queue_frame(stream.queue, stream.last_frame)
         try:
+            while not cancel_event.is_set() and not inference_enabled.is_set():
+                status_frame = render_status_frame("Waiting for POST /api/config", config.width, config.height)
+                stream.last_frame = _encode_frame(status_frame)
+                _queue_frame(stream.queue, stream.last_frame)
+                time.sleep(1.0 / max(1, config.fps))
+            if cancel_event.is_set():
+                return
             if config.mode == "fever":
                 frame_iter = generate_fever_dream_frames(config, cancel_event)
             else:
@@ -238,6 +252,7 @@ current_config = RunConfig()
 latest_camera_frame: np.ndarray | None = None
 latest_mood: dict[str, Any] | None = None
 latest_camera_lock = threading.Lock()
+inference_enabled = threading.Event()
 health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipelines": {}}
 
 
@@ -264,15 +279,21 @@ def _gemma_status() -> dict[str, Any]:
 def _startup() -> None:
     log_backend_configuration(current_config.output_mode)
     health_status.update(_gemma_status())
+    health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+    health_status["inference_enabled"] = inference_enabled.is_set()
     if not health_status.get("gemma_ok", False):
         health_status["errors"]["gemma"] = health_status.get("gemma_reason")
-    try:
-        info = warmup_pipeline(current_config.output_mode)
-        health_status["pipeline_loaded"] = True
-        health_status["pipelines"][current_config.output_mode] = info
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("LTX-2 warmup failed: %s", exc)
-        health_status["errors"][current_config.output_mode] = str(exc)
+    if health_status["autostart"]:
+        try:
+            info = warmup_pipeline(current_config.output_mode)
+            health_status["pipeline_loaded"] = True
+            health_status["pipelines"][current_config.output_mode] = info
+            inference_enabled.set()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("LTX-2 warmup failed: %s", exc)
+            health_status["errors"][current_config.output_mode] = str(exc)
+    else:
+        LOGGER.info("Autostart disabled; waiting for POST /api/config.")
     stream_manager.restart(current_config, _get_latest_camera_state)
 
 
@@ -297,6 +318,17 @@ async def set_config(request: Request) -> RunConfig:
     global current_config
     current_config = config
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
+    if not inference_enabled.is_set():
+        inference_enabled.set()
+    health_status["inference_enabled"] = inference_enabled.is_set()
+    if not health_status.get("pipeline_loaded", False):
+        try:
+            info = warmup_pipeline(current_config.output_mode)
+            health_status["pipeline_loaded"] = True
+            health_status["pipelines"][current_config.output_mode] = info
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("LTX-2 warmup failed: %s", exc)
+            health_status["errors"][current_config.output_mode] = str(exc)
     stream_manager.restart(current_config, _get_latest_camera_state)
     return current_config
 
@@ -336,11 +368,17 @@ def healthz(deep: bool = False) -> dict[str, Any]:
         health_status.update(_gemma_status())
         if not health_status.get("gemma_ok", False):
             health_status["errors"]["gemma"] = health_status.get("gemma_reason")
+        health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+        health_status["inference_enabled"] = inference_enabled.is_set()
         return health_status
     status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
     status.update(_gemma_status())
+    status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+    status["inference_enabled"] = inference_enabled.is_set()
     if not status.get("gemma_ok", False):
         status["errors"]["gemma"] = status.get("gemma_reason")
+    if not status["inference_enabled"]:
+        return status
     try:
         info = warmup_pipeline(current_config.output_mode)
         status["pipelines"][current_config.output_mode] = info

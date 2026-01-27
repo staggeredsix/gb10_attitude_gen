@@ -271,6 +271,8 @@ def log_backend_configuration(output_mode: str | None = None) -> None:
     LOGGER.info("LTX-2 backend=%s", backend)
     LOGGER.info("LTX-2 output_mode=%s", resolved_output_mode)
     if backend == "pipelines":
+        enable_fp8 = os.getenv("LTX2_ENABLE_FP8", "1").lower() in {"1", "true", "yes", "on"}
+        LOGGER.info("LTX2_ENABLE_FP8=%s", enable_fp8)
         try:
             checkpoint_path = _resolve_checkpoint_path()
             LOGGER.info("LTX-2 checkpoint_path=%s", checkpoint_path)
@@ -326,6 +328,13 @@ def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object], *, output_m
             "Upscaled output requires a distilled LoRA. "
             "Set LTX2_DISTILLED_LORA_PATH and LTX2_DISTILLED_LORA_STRENGTH."
         )
+    if "fp8transformer" in init_kwargs and "fp8transformer" not in params:
+        has_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        if not has_kwargs:
+            raise RuntimeError(
+                f"{pipe_cls.__name__} does not accept fp8transformer. "
+                "Update LTX-2 or disable with LTX2_ENABLE_FP8=0."
+            )
 
     filtered = _filter_kwargs_for_callable(factory, init_kwargs)
     LOGGER.info("Initializing %s with keys=%s", pipe_cls.__name__, sorted(filtered.keys()))
@@ -340,6 +349,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
 
         artifacts = _resolve_artifacts(output_mode)
         dtype = torch.bfloat16
+        enable_fp8 = os.getenv("LTX2_ENABLE_FP8", "1").lower() in {"1", "true", "yes", "on"}
 
         if output_mode == "upscaled":
             pipe_cls = TI2VidTwoStagesPipeline
@@ -355,6 +365,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
                 "spatial_upsampler_path": artifacts.spatial_upsampler_path,
                 "distilled_lora": distilled_lora,
                 "loras": artifacts.loras,
+                "fp8transformer": enable_fp8,
                 "torch_dtype": dtype,
             }
         else:
@@ -363,6 +374,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
                 "checkpoint_path": artifacts.checkpoint_path,
                 "gemma_root": artifacts.gemma_root,
                 "loras": artifacts.loras,
+                "fp8transformer": enable_fp8,
                 "torch_dtype": dtype,
             }
 
@@ -624,7 +636,10 @@ def _decode_video_to_frames(video_path: str) -> list[Image.Image]:
 
 
 def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
-    return pipe(**kwargs)
+    with torch.inference_mode():
+        if os.getenv("LTX2_LOG_GRAD") == "1":
+            LOGGER.info("torch.is_grad_enabled()=%s", torch.is_grad_enabled())
+        return pipe(**kwargs)
 
 
 def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Image]:

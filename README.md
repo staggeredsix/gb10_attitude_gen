@@ -127,6 +127,12 @@ When posting to `/api/config`, you can also set:
 
 Upscaled output requires width and height to be multiples of 64 (stage 1 uses half resolution).
 
+## Environment flags
+
+- `LTX2_ENABLE_FP8` (default: `1`): enable FP8 transformer path in ltx-pipelines.
+- `LTX2_AUTOSTART` (default: `0`): warm up and start inference on boot when set to `1`.
+- `LTX2_LOG_GRAD` (optional): log `torch.is_grad_enabled()` during inference.
+
 ## Troubleshooting
 
 - **Missing model_index.json**: ensure the path you mounted is the snapshot root (the folder that contains `model_index.json`). The loader fails fast if this file is missing.
