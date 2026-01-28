@@ -106,12 +106,15 @@
         <label for="prompt">Prompt</label>
         <textarea id="prompt"></textarea>
 
+        <label for="negativePrompt">Negative prompt</label>
+        <textarea id="negativePrompt" placeholder="e.g., people, faces, text, watermark"></textarea>
+
         <label for="resolution">Resolution</label>
         <select id="resolution">
           <option value="1280x736">1280 × 736 (near 720p)</option>
           <option value="1024x576">1024 × 576</option>
           <option value="960x544">960 × 544</option>
-          <option value="640x352">640 × 352</option>
+          <option value="640x384">640 × 384</option>
           <option value="custom">Custom</option>
         </select>
 
@@ -120,6 +123,11 @@
           <option value="native">Native (one-stage output)</option>
           <option value="upscaled">Upscaled (two-stage refinement)</option>
         </select>
+
+        <label class="inline-toggle">
+          <input id="muteToggle" type="checkbox" />
+          Mute audio (if available)
+        </label>
 
         <div class="row">
           <div>
@@ -179,8 +187,10 @@
     <script>
       const modeSelect = document.getElementById("mode");
       const promptInput = document.getElementById("prompt");
+      const negativePromptInput = document.getElementById("negativePrompt");
       const resolutionSelect = document.getElementById("resolution");
       const outputModeSelect = document.getElementById("outputMode");
+      const muteToggle = document.getElementById("muteToggle");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
       const fpsInput = document.getElementById("fps");
@@ -214,6 +224,7 @@
         return {
           mode: modeSelect.value,
           prompt: promptInput.value.trim(),
+          negative_prompt: negativePromptInput.value.trim(),
           width: parseInt(widthInput.value, 10),
           height: parseInt(heightInput.value, 10),
           fps: parseInt(fpsInput.value, 10),
@@ -257,11 +268,22 @@
         }
       }
 
+      function applyMuteState() {
+        const muted = !!muteToggle.checked;
+        document.querySelectorAll("video, audio").forEach((el) => {
+          el.muted = muted;
+          if ("volume" in el) {
+            el.volume = muted ? 0.0 : 1.0;
+          }
+        });
+      }
+
       async function loadConfig() {
         const response = await fetch("/api/config");
         const config = await response.json();
         modeSelect.value = config.mode;
         promptInput.value = config.prompt;
+        negativePromptInput.value = config.negative_prompt || "";
         widthInput.value = config.width;
         heightInput.value = config.height;
         const presetValue = `${config.width}x${config.height}`;
@@ -319,6 +341,7 @@
 
       modeSelect.addEventListener("change", updateMoodControls);
       applyButton.addEventListener("click", applyConfig);
+      muteToggle.addEventListener("change", applyMuteState);
       resolutionSelect.addEventListener("change", () => {
         if (resolutionSelect.value === "custom") {
           return;
@@ -332,6 +355,7 @@
       webcamToggle.addEventListener("click", toggleWebcam);
 
       loadConfig();
+      applyMuteState();
     </script>
   </body>
 </html>

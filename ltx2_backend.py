@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import random
+import sys
 import threading
 import time
 import uuid
@@ -17,12 +18,17 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from settings_loader import load_settings_conf
+
+load_settings_conf()
+
 from ltx_pipelines.distilled import DistilledPipeline
 
 LOGGER = logging.getLogger("ltx2_backend")
 
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
+_CHAIN_FRAMES: dict[tuple[str, int], Image.Image] = {}
 
 DEFAULT_GEMMA_MODEL_ID = "google/gemma-3-12b"
 DEFAULT_GEMMA_ROOT = "/models/gemma"
@@ -30,6 +36,7 @@ DEFAULT_BACKEND = "pipelines"
 DEFAULT_LTX2_MODEL_ID = "Lightricks/LTX-2"
 DEFAULT_FP4_FILE = "ltx-2-19b-dev-fp4.safetensors"
 DEFAULT_FP8_FILE = "ltx-2-19b-dev-fp8.safetensors"
+DEFAULT_SPATIAL_UPSCALER_FILE = "ltx-2-spatial-upscaler-x2-1.0.safetensors"
 
 
 @dataclass(frozen=True)
@@ -237,6 +244,74 @@ def _resolve_checkpoint_path() -> str:
     )
 
 
+def _resolve_spatial_upsampler_path(checkpoint_path: str) -> str:
+    env_value = os.getenv("LTX2_SPATIAL_UPSAMPLER_PATH")
+    if env_value:
+        path = pathlib.Path(env_value).expanduser()
+        if path.exists():
+            return str(path)
+        LOGGER.warning(
+            "LTX2_SPATIAL_UPSAMPLER_PATH does not exist at %s; falling back to auto-discovery.",
+            path,
+        )
+
+    filename = os.getenv("LTX2_SPATIAL_UPSCALER_FILE", DEFAULT_SPATIAL_UPSCALER_FILE)
+    checkpoint_parent = pathlib.Path(checkpoint_path).expanduser().parent
+    candidate = checkpoint_parent / filename
+    if candidate.is_file():
+        return str(candidate)
+
+    snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
+    if snapshot_dir:
+        snapshot_path = pathlib.Path(snapshot_dir).expanduser()
+        if snapshot_path.exists():
+            snapshots_root = snapshot_path / "snapshots"
+            candidate_roots: list[pathlib.Path] = []
+            if snapshots_root.is_dir():
+                candidate_roots.extend(
+                    sorted(
+                        (p for p in snapshots_root.iterdir() if p.is_dir()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            candidate_roots.append(snapshot_path)
+
+            for root in candidate_roots:
+                candidate = root / filename
+                if candidate.is_file():
+                    return str(candidate)
+        else:
+            LOGGER.warning(
+                "LTX2_SNAPSHOT_DIR does not exist at %s; falling back to cache search.",
+                snapshot_path,
+            )
+
+    cache_roots = [
+        os.getenv("HUGGINGFACE_HUB_CACHE"),
+        os.getenv("HF_HOME"),
+        "/models/huggingface/hub",
+    ]
+    for root in filter(None, cache_roots):
+        root_path = pathlib.Path(root).expanduser()
+        if not root_path.exists():
+            continue
+        repo_root = root_path / "models--Lightricks--LTX-2"
+        search_root = repo_root if repo_root.exists() else root_path
+        candidates = sorted(
+            search_root.rglob(filename),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            return str(candidates[0])
+
+    raise RuntimeError(
+        "Spatial upsampler file could not be resolved. Set LTX2_SPATIAL_UPSAMPLER_PATH "
+        f"or ensure {filename} exists alongside the checkpoint or in the HuggingFace cache."
+    )
+
+
 def _require_env_path(name: str, *, required: bool = True) -> str | None:
     value = os.getenv(name)
     if not value:
@@ -262,10 +337,11 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
             "Gemma is required. Set LTX2_GEMMA_ROOT to a directory created by "
             f"download_model.sh ({DEFAULT_GEMMA_MODEL_ID}). ({gemma_reason})"
         )
-    spatial_upsampler_path = _require_env_path("LTX2_SPATIAL_UPSAMPLER_PATH", required=True)
+    spatial_upsampler_path = _resolve_spatial_upsampler_path(checkpoint_path)
     distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=False)
     distilled_lora_strength = _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6)
     loras: list[dict[str, object]] = []
+    LOGGER.info("LTX-2 spatial_upsampler_path=%s", spatial_upsampler_path)
 
     return LTX2Artifacts(
         checkpoint_path=checkpoint_path,
@@ -409,6 +485,10 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
 
         LOGGER.info("Using DistilledPipeline (fast inference)")
         pipe = _instantiate_pipeline(pipe_cls, init_kwargs, output_mode=output_mode)
+        if _env_bool("LTX2_PERSIST_MODELS", True) and hasattr(pipe, "model_ledger"):
+            _enable_model_caching(pipe.model_ledger)
+            LOGGER.info("Model caching enabled; expect no checkpoint shard reloads.")
+        _maybe_disable_cleanup(pipe)
         if hasattr(pipe, "to"):
             pipe.to(device)
         if hasattr(pipe, "eval"):
@@ -524,6 +604,23 @@ def _prompt_drift(prompt: str) -> str:
     return f"{prompt}, {', '.join(drift)}"
 
 
+def _maybe_prompt_drift(prompt: str) -> str:
+    if os.getenv("LTX2_PROMPT_DRIFT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return _prompt_drift(prompt)
+    return prompt
+
+
+def _build_negative_prompt(prompt: str, negative_prompt: str) -> str:
+    env_negative = os.getenv("LTX2_NEGATIVE_PROMPT", "").strip()
+    parts = [negative_prompt.strip()] if negative_prompt else []
+    if env_negative:
+        parts.append(env_negative)
+    lowered = prompt.lower()
+    if any(term in lowered for term in ("no people", "no person", "no humans", "no human", "without people", "without humans")):
+        parts.append("people, person, human, face, portrait, body")
+    return ", ".join([p for p in parts if p])
+
+
 def _adjust_num_frames(num_frames: int) -> int:
     if num_frames < 1:
         return 1
@@ -532,13 +629,50 @@ def _adjust_num_frames(num_frames: int) -> int:
     return ((num_frames - 1) // 8 + 1) * 8 + 1
 
 
+def _round_down_to_multiple(x: int, m: int) -> int:
+    return max(m, (x // m) * m)
+
+
+def _round_up_to_multiple(x: int, m: int) -> int:
+    return max(m, ((x + m - 1) // m) * m)
+
+
+def _requires_64_multiple(pipe: object, output_mode: str) -> bool:
+    if output_mode == "upscaled":
+        return True
+    if "Distilled" in pipe.__class__.__name__:
+        return True
+    return os.getenv("LTX2_USE_DISTILLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _adjust_resolution_for_two_stage(
+    pipe: object,
+    output_mode: str,
+    width: int,
+    height: int,
+) -> tuple[int, int]:
+    if not _requires_64_multiple(pipe, output_mode):
+        return width, height
+    new_width = _round_down_to_multiple(width, 64)
+    new_height = _round_down_to_multiple(height, 64)
+    if (new_width, new_height) != (width, height):
+        LOGGER.info(
+            "Adjusted resolution for two-stage: %sx%s -> %sx%s",
+            width,
+            height,
+            new_width,
+            new_height,
+        )
+    return new_width, new_height
+
+
 def _resolve_stage_dimensions(config) -> tuple[int, int]:
     output_mode = getattr(config, "output_mode", "native")
     width = config.width
     height = config.height
     if os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"} and output_mode == "native":
         width = _env_int_clamped("LTX2_REALTIME_WIDTH", 640, min_value=64, max_value=4096)
-        height = _env_int_clamped("LTX2_REALTIME_HEIGHT", 352, min_value=64, max_value=4096)
+        height = _env_int_clamped("LTX2_REALTIME_HEIGHT", 384, min_value=64, max_value=4096)
     if output_mode == "upscaled":
         stage_width = width // 2
         stage_height = height // 2
@@ -652,6 +786,12 @@ def _write_temp_image(frame_bgr: np.ndarray) -> str:
     return str(temp_path)
 
 
+def _write_temp_pil(image: Image.Image) -> str:
+    rgb = np.array(image)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    return _write_temp_image(bgr)
+
+
 def _yield_video_frames(video_path: str) -> Iterable[Image.Image]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -671,8 +811,54 @@ def _decode_video_to_frames(video_path: str) -> list[Image.Image]:
     return list(_yield_video_frames(video_path))
 
 
+def _enable_model_caching(ledger: object) -> None:
+    if getattr(ledger, "_ltx2_cache_enabled", False):
+        return
+    cache: dict[str, object] = {}
+    setattr(ledger, "_ltx2_cache_enabled", True)
+    setattr(ledger, "_ltx2_cached_models", cache)
+    for name in (
+        "transformer",
+        "video_encoder",
+        "video_decoder",
+        "text_encoder",
+        "audio_decoder",
+        "vocoder",
+        "spatial_upsampler",
+    ):
+        if not hasattr(ledger, name):
+            continue
+        orig = getattr(ledger, name)
+
+        def cached_call(*args, _orig=orig, _name=name, **kwargs):
+            if _name not in cache:
+                cache[_name] = _orig(*args, **kwargs)
+            return cache[_name]
+
+        setattr(ledger, name, cached_call)
+
+
+def _maybe_disable_cleanup(pipe: object) -> None:
+    if not _env_bool("LTX2_SKIP_CLEANUP", True):
+        return
+    module = sys.modules.get(pipe.__class__.__module__)
+    if not module or not hasattr(module, "cleanup_memory"):
+        return
+
+    def _noop_cleanup_memory() -> None:
+        return None
+
+    setattr(module, "cleanup_memory", _noop_cleanup_memory)
+    LOGGER.info("LTX2 cleanup_memory disabled via LTX2_SKIP_CLEANUP=1")
+
+
+def _use_inference_mode() -> bool:
+    return os.getenv("LTX2_USE_INFERENCE_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
-    with torch.inference_mode():
+    context = torch.inference_mode() if _use_inference_mode() else torch.no_grad()
+    with context:
         if os.getenv("LTX2_LOG_GRAD") == "1":
             LOGGER.info("torch.is_grad_enabled()=%s", torch.is_grad_enabled())
         return pipe(**kwargs)
@@ -821,6 +1007,7 @@ def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Ima
 def _generate_video_chunk(
     pipe: object,
     *,
+    output_mode: str,
     prompt: str,
     negative_prompt: str,
     width: int,
@@ -836,6 +1023,7 @@ def _generate_video_chunk(
     signature = inspect.signature(pipe.__call__)
     supports_output_path = any(name in signature.parameters for name in ("output_path", "output"))
     output_path = f"/tmp/ltx_out_{uuid.uuid4().hex}.mp4" if supports_output_path else None
+    width, height = _adjust_resolution_for_two_stage(pipe, output_mode, width, height)
     kwargs = _build_pipeline_kwargs(
         pipe,
         prompt=prompt,
@@ -863,7 +1051,8 @@ def _generate_video_chunk(
                 LOGGER.warning("Failed to remove temporary video: %s", output_path)
         return
     _log_vram("diffusers_chunk_end")
-    frames = _extract_video_frames_from_pipeline_result(result)
+    with torch.no_grad():
+        frames = _extract_video_frames_from_pipeline_result(result)
     for frame in frames:
         yield frame
 
@@ -885,6 +1074,7 @@ def _should_retry_without_negative_prompt(exc: Exception) -> bool:
 def _generate_diffusers_chunk(
     pipe: object,
     *,
+    output_mode: str,
     prompt: str,
     negative_prompt: str,
     width: int,
@@ -896,6 +1086,7 @@ def _generate_diffusers_chunk(
     seed: int | None,
 ) -> Iterable[Image.Image]:
     _log_vram("diffusers_chunk_start")
+    width, height = _adjust_resolution_for_two_stage(pipe, output_mode, width, height)
     kwargs = _build_diffusers_kwargs(
         pipe,
         prompt=prompt,
@@ -917,7 +1108,8 @@ def _generate_diffusers_chunk(
             result = pipe(**kwargs)
         else:
             raise
-    frames = _extract_video_frames_from_pipeline_result(result)
+    with torch.no_grad():
+        frames = _extract_video_frames_from_pipeline_result(result)
     for frame in frames:
         yield frame
 
@@ -939,85 +1131,65 @@ def _get_diffusers_pipe_or_status(config) -> object | None:
 
 
 def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterable[Image.Image]:
+    while not cancel_event.is_set():
+        for frame in generate_fever_dream_chunk(config, cancel_event):
+            yield frame
+
+
+def _chain_key(mode: str, cancel_event: threading.Event) -> tuple[str, int]:
+    return (mode, id(cancel_event))
+
+
+def _get_chain_frame(mode: str, cancel_event: threading.Event) -> Image.Image | None:
+    return _CHAIN_FRAMES.get(_chain_key(mode, cancel_event))
+
+
+def _set_chain_frame(mode: str, cancel_event: threading.Event, frame: Image.Image | None) -> None:
+    key = _chain_key(mode, cancel_event)
+    if frame is None:
+        _CHAIN_FRAMES.pop(key, None)
+    else:
+        _CHAIN_FRAMES[key] = frame
+
+
+def _resolve_chunk_settings(config) -> tuple[int, int, int]:
+    explicit_frames = os.getenv("LTX2_NUM_FRAMES")
+    if explicit_frames:
+        try:
+            requested = int(float(explicit_frames))
+        except ValueError:
+            LOGGER.warning("Invalid LTX2_NUM_FRAMES=%s; ignoring.", explicit_frames)
+            requested = 0
+        if requested > 0:
+            num_frames = _adjust_num_frames(requested)
+            stage_width, stage_height = _resolve_stage_dimensions(config)
+            LOGGER.info("Chunk frames override: LTX2_NUM_FRAMES=%s -> %s frames", requested, num_frames)
+            return stage_width, stage_height, num_frames
+
+    target_seconds = os.getenv("LTX2_TARGET_CHUNK_SECONDS")
+    if target_seconds:
+        try:
+            chunk_seconds = float(target_seconds)
+        except ValueError:
+            LOGGER.warning("Invalid LTX2_TARGET_CHUNK_SECONDS=%s; using LTX2_CHUNK_SECONDS.", target_seconds)
+            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 1.0)
+    else:
+        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 1.0)
+    min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 9, min_value=1, max_value=120)
+    num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
+    stage_width, stage_height = _resolve_stage_dimensions(config)
+    return stage_width, stage_height, num_frames
+
+
+def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
-            while not cancel_event.is_set():
-                yield render_status_frame("Diffusers backend unavailable", config.width, config.height)
-                time.sleep(1.0 / max(1, config.fps))
-            return
-        stage_width, stage_height = _resolve_stage_dimensions(config)
-        LOGGER.info(
-            "Fever Dream diffusers output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
-            output_mode,
-            stage_width,
-            stage_height,
-            config.width,
-            config.height,
-            config.fps,
-        )
-        while not cancel_event.is_set():
-            prompt = _prompt_drift(config.prompt)
-            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
-            min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
-            num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
-            seed = None
-            if config.seed is not None:
-                seed = config.seed + int(time.time())
-            try:
-                realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
-                guidance_scale = 3.0 + config.dream_strength * 5.0
-                if realtime:
-                    guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-                if realtime and guidance_scale <= 1.0:
-                    negative_prompt = ""
-                else:
-                    negative_prompt = getattr(config, "negative_prompt", "") or ""
-                num_inference_steps = int(10 + config.motion * 10)
-                if realtime:
-                    num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
-                frames = _generate_diffusers_chunk(
-                    pipe,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    width=stage_width,
-                    height=stage_height,
-                    num_frames=num_frames,
-                    fps=config.fps,
-                    guidance_scale=guidance_scale,
-                    num_inference_steps=num_inference_steps,
-                    seed=seed,
-                )
-                for frame in frames:
-                    yield frame
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("Fever Dream diffusers generation error: %s", exc)
-                yield render_status_frame("Generation error", config.width, config.height)
-        return
-
-    pipe = _get_pipelines_pipe_or_status(config)
-    if pipe is None:
-        while not cancel_event.is_set():
-            yield render_status_frame("LTX-2 load failed", config.width, config.height)
-            time.sleep(1.0 / max(1, config.fps))
-        return
-    stage_width, stage_height = _resolve_stage_dimensions(config)
-    LOGGER.info(
-        "Fever Dream output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
-        output_mode,
-        stage_width,
-        stage_height,
-        config.width,
-        config.height,
-        config.fps,
-    )
-    while not cancel_event.is_set():
-        prompt = _prompt_drift(config.prompt)
-        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
-        min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
-        num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
+            return [render_status_frame("Diffusers backend unavailable", config.width, config.height)]
+        stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
+        prompt = _maybe_prompt_drift(config.prompt)
         seed = None
         if config.seed is not None:
             seed = config.seed + int(time.time())
@@ -1030,82 +1202,17 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
                 negative_prompt = ""
             else:
                 negative_prompt = getattr(config, "negative_prompt", "") or ""
+                negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
             if realtime:
-                num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
-            frames = _generate_video_chunk(
-                pipe,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=stage_width,
-                height=stage_height,
-                num_frames=num_frames,
-                fps=config.fps,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                seed=seed,
-            )
-            for frame in frames:
-                yield frame
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Fever Dream generation error: %s", exc)
-            yield render_status_frame("Generation error", config.width, config.height)
-
-
-def generate_mood_mirror_frames(
-    config,
-    latest_camera_state: Callable[[], tuple[np.ndarray | None, dict | None]],
-    cancel_event: threading.Event,
-) -> Iterable[Image.Image]:
-    backend = _get_backend()
-    output_mode = getattr(config, "output_mode", "native")
-    if backend == "diffusers":
-        pipe = _get_diffusers_pipe_or_status(config)
-        if pipe is None:
-            while not cancel_event.is_set():
-                yield render_status_frame("Diffusers backend unavailable", config.width, config.height)
-                time.sleep(1.0 / max(1, config.fps))
-            return
-        stage_width, stage_height = _resolve_stage_dimensions(config)
-        LOGGER.info(
-            "Mood Mirror diffusers output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
-            output_mode,
-            stage_width,
-            stage_height,
-            config.width,
-            config.height,
-            config.fps,
-        )
-        while not cancel_event.is_set():
-            camera_frame, mood_state = latest_camera_state()
-            if camera_frame is None:
-                yield render_status_frame("Waiting for camera feed...", config.width, config.height)
-                time.sleep(1.0 / max(1, config.fps))
-                continue
-            prompt = config.base_prompt
-            if mood_state:
-                mood_prompt = mood_state.get("prompt_hint") or ""
-                prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
-            min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
-            num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
-            seed = None
-            if config.seed is not None:
-                seed = config.seed + int(time.time())
-            try:
-                realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
-                guidance_scale = 3.0 + config.dream_strength * 4.0
-                if realtime:
-                    guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-                if realtime and guidance_scale <= 1.0:
-                    negative_prompt = ""
-                else:
-                    negative_prompt = getattr(config, "negative_prompt", "") or ""
-                num_inference_steps = int(10 + config.motion * 10)
-                if realtime:
-                    num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
-                frames = _generate_diffusers_chunk(
+                num_inference_steps = min(
+                    num_inference_steps,
+                    _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
+                )
+            frames = list(
+                _generate_diffusers_chunk(
                     pipe,
+                    output_mode=output_mode,
                     prompt=prompt,
                     negative_prompt=negative_prompt,
                     width=stage_width,
@@ -1116,62 +1223,52 @@ def generate_mood_mirror_frames(
                     num_inference_steps=num_inference_steps,
                     seed=seed,
                 )
-                for frame in frames:
-                    yield frame
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
-                yield render_status_frame("Generation error", config.width, config.height)
-        return
+            )
+            if frames:
+                _set_chain_frame("fever", cancel_event, frames[-1])
+            return frames
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Fever Dream diffusers generation error: %s", exc)
+            return [render_status_frame("Generation error", config.width, config.height)]
 
     pipe = _get_pipelines_pipe_or_status(config)
     if pipe is None:
-        while not cancel_event.is_set():
-            yield render_status_frame("LTX-2 load failed", config.width, config.height)
-            time.sleep(1.0 / max(1, config.fps))
-        return
-    stage_width, stage_height = _resolve_stage_dimensions(config)
-    LOGGER.info(
-        "Mood Mirror output_mode=%s stage_size=%sx%s final_size=%sx%s fps=%s",
-        output_mode,
-        stage_width,
-        stage_height,
-        config.width,
-        config.height,
-        config.fps,
-    )
-    while not cancel_event.is_set():
-        camera_frame, mood_state = latest_camera_state()
-        if camera_frame is None:
-            yield render_status_frame("Waiting for camera feed...", config.width, config.height)
-            time.sleep(1.0 / max(1, config.fps))
-            continue
-        prompt = config.base_prompt
-        if mood_state:
-            mood_prompt = mood_state.get("prompt_hint") or ""
-            prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 0.25)
-        min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 5, min_value=1, max_value=120)
-        num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
-        seed = None
-        if config.seed is not None:
-            seed = config.seed + int(time.time())
-        strength = 0.2 + (1.0 - config.identity_strength) * 0.6
-        image_path = _write_temp_image(camera_frame)
-        images = [(image_path, 0, strength)]
-        try:
-            realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
-            guidance_scale = 3.0 + config.dream_strength * 4.0
-            if realtime:
-                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-            if realtime and guidance_scale <= 1.0:
-                negative_prompt = ""
-            else:
-                negative_prompt = getattr(config, "negative_prompt", "") or ""
-            num_inference_steps = int(10 + config.motion * 10)
-            if realtime:
-                num_inference_steps = min(num_inference_steps, _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200))
-            frames = _generate_video_chunk(
+        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
+    prompt = _maybe_prompt_drift(config.prompt)
+    seed = None
+    if config.seed is not None:
+        seed = config.seed + int(time.time())
+    images: list[tuple[str, int, float]] | None = None
+    temp_paths: list[str] = []
+    chain_enabled = _env_bool("LTX2_CHAINING", True)
+    chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+    try:
+        if chain_enabled:
+            carry = _get_chain_frame("fever", cancel_event)
+            if carry is not None:
+                carry_path = _write_temp_pil(carry)
+                temp_paths.append(carry_path)
+                images = [(carry_path, 0, chain_strength)]
+        realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+        guidance_scale = 3.0 + config.dream_strength * 5.0
+        if realtime:
+            guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+        if realtime and guidance_scale <= 1.0:
+            negative_prompt = ""
+        else:
+            negative_prompt = getattr(config, "negative_prompt", "") or ""
+            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+        num_inference_steps = int(10 + config.motion * 10)
+        if realtime:
+            num_inference_steps = min(
+                num_inference_steps,
+                _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
+            )
+        frames = list(
+            _generate_video_chunk(
                 pipe,
+                output_mode=output_mode,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 width=stage_width,
@@ -1183,13 +1280,161 @@ def generate_mood_mirror_frames(
                 seed=seed,
                 images=images,
             )
-            for frame in frames:
-                yield frame
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Mood Mirror generation error: %s", exc)
-            yield render_status_frame("Generation error", config.width, config.height)
-        finally:
+        )
+        if frames:
+            _set_chain_frame("fever", cancel_event, frames[-1])
+        return frames
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Fever Dream generation error: %s", exc)
+        return [render_status_frame("Generation error", config.width, config.height)]
+    finally:
+        for path in temp_paths:
             try:
-                os.remove(image_path)
+                os.remove(path)
             except OSError:
-                LOGGER.warning("Failed to remove temporary image: %s", image_path)
+                LOGGER.warning("Failed to remove temporary image: %s", path)
+
+def generate_mood_mirror_frames(
+    config,
+    latest_camera_state: Callable[[], tuple[np.ndarray | None, dict | None]],
+    cancel_event: threading.Event,
+) -> Iterable[Image.Image]:
+    while not cancel_event.is_set():
+        for frame in generate_mood_mirror_chunk(config, latest_camera_state, cancel_event):
+            yield frame
+
+
+def generate_mood_mirror_chunk(
+    config,
+    latest_camera_state: Callable[[], tuple[np.ndarray | None, dict | None]],
+    cancel_event: threading.Event,
+) -> list[Image.Image]:
+    backend = _get_backend()
+    output_mode = getattr(config, "output_mode", "native")
+    if backend == "diffusers":
+        pipe = _get_diffusers_pipe_or_status(config)
+        if pipe is None:
+            return [render_status_frame("Diffusers backend unavailable", config.width, config.height)]
+        stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
+        camera_frame, mood_state = latest_camera_state()
+        if camera_frame is None:
+            return [render_status_frame("Waiting for camera feed...", config.width, config.height)]
+        prompt = config.base_prompt
+        if mood_state:
+            mood_prompt = mood_state.get("prompt_hint") or ""
+            prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
+        prompt = _maybe_prompt_drift(prompt)
+        seed = None
+        if config.seed is not None:
+            seed = config.seed + int(time.time())
+        try:
+            realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+            guidance_scale = 3.0 + config.dream_strength * 4.0
+            if realtime:
+                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+            if realtime and guidance_scale <= 1.0:
+                negative_prompt = ""
+            else:
+                negative_prompt = getattr(config, "negative_prompt", "") or ""
+                negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+            num_inference_steps = int(10 + config.motion * 10)
+            if realtime:
+                num_inference_steps = min(
+                    num_inference_steps,
+                    _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
+                )
+            frames = list(
+                _generate_diffusers_chunk(
+                    pipe,
+                    output_mode=output_mode,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=stage_width,
+                    height=stage_height,
+                    num_frames=num_frames,
+                    fps=config.fps,
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_inference_steps,
+                    seed=seed,
+                )
+            )
+            if frames:
+                _set_chain_frame("mood", cancel_event, frames[-1])
+            return frames
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
+            return [render_status_frame("Generation error", config.width, config.height)]
+
+    pipe = _get_pipelines_pipe_or_status(config)
+    if pipe is None:
+        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
+    camera_frame, mood_state = latest_camera_state()
+    if camera_frame is None:
+        return [render_status_frame("Waiting for camera feed...", config.width, config.height)]
+    prompt = config.base_prompt
+    if mood_state:
+        mood_prompt = mood_state.get("prompt_hint") or ""
+        prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
+    prompt = _maybe_prompt_drift(prompt)
+    seed = None
+    if config.seed is not None:
+        seed = config.seed + int(time.time())
+    strength = 0.2 + (1.0 - config.identity_strength) * 0.6
+    temp_paths: list[str] = []
+    images: list[tuple[str, int, float]] = []
+    chain_enabled = _env_bool("LTX2_CHAINING", True)
+    chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+    try:
+        image_path = _write_temp_image(camera_frame)
+        temp_paths.append(image_path)
+        images.append((image_path, 0, strength))
+        if chain_enabled:
+            carry = _get_chain_frame("mood", cancel_event)
+            if carry is not None:
+                carry_path = _write_temp_pil(carry)
+                temp_paths.append(carry_path)
+                images.append((carry_path, 0, chain_strength))
+        realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
+        guidance_scale = 3.0 + config.dream_strength * 4.0
+        if realtime:
+            guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+        if realtime and guidance_scale <= 1.0:
+            negative_prompt = ""
+        else:
+            negative_prompt = getattr(config, "negative_prompt", "") or ""
+            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+        num_inference_steps = int(10 + config.motion * 10)
+        if realtime:
+            num_inference_steps = min(
+                num_inference_steps,
+                _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
+            )
+        frames = list(
+            _generate_video_chunk(
+                pipe,
+                output_mode=output_mode,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=stage_width,
+                height=stage_height,
+                num_frames=num_frames,
+                fps=config.fps,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
+                seed=seed,
+                images=images,
+            )
+        )
+        if frames:
+            _set_chain_frame("mood", cancel_event, frames[-1])
+        return frames
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Mood Mirror generation error: %s", exc)
+        return [render_status_frame("Generation error", config.width, config.height)]
+    finally:
+        for path in temp_paths:
+            try:
+                os.remove(path)
+            except OSError:
+                LOGGER.warning("Failed to remove temporary image: %s", path)

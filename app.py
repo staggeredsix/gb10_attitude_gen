@@ -17,11 +17,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from PIL import Image
 
+from settings_loader import load_settings_conf
+
+load_settings_conf()
+
 from ltx2_backend import (
     DEFAULT_GEMMA_ROOT,
     backend_requires_gemma,
-    generate_fever_dream_frames,
-    generate_mood_mirror_frames,
+    generate_fever_dream_chunk,
+    generate_mood_mirror_chunk,
     log_backend_configuration,
     render_status_frame,
     validate_gemma_root,
@@ -60,6 +64,72 @@ def _env_fps(name: str, default: int) -> int:
     return max(1, min(value, 60))
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        LOGGER.warning("Invalid float for %s=%s; using %s", name, value, default)
+        return default
+
+
+def _find_blocked_terms(text: str) -> list[str]:
+    if not text:
+        return []
+    lowered = text.lower()
+    blocked = [
+        # minors / youth
+        "child",
+        "children",
+        "kid",
+        "kids",
+        "teen",
+        "teenager",
+        "young boy",
+        "young girl",
+        "schoolgirl",
+        "schoolboy",
+        "underage",
+        "minor",
+        "preteen",
+        "toddler",
+        "infant",
+        "baby",
+        "loli",
+        "lolita",
+        # nudity / sexual content
+        "nude",
+        "nudity",
+        "naked",
+        "topless",
+        "breast",
+        "breasts",
+        "boob",
+        "boobs",
+        "nipples",
+        "areola",
+        "lingerie",
+        "bikini",
+        "swimsuit",
+        "thong",
+        "genitals",
+        "vagina",
+        "penis",
+        "porn",
+        "porno",
+        "nsfw",
+        "explicit",
+        "erotic",
+        "sex",
+        "sexual",
+        "fetish",
+    ]
+    hits = [term for term in blocked if term in lowered]
+    return hits
+
+
 DEFAULT_WIDTH = _env_int("LTX2_NATIVE_WIDTH", 1280)
 DEFAULT_HEIGHT = _env_int("LTX2_NATIVE_HEIGHT", 736)
 DEFAULT_FPS = _env_int("LTX2_NATIVE_FPS", 24)
@@ -93,6 +163,9 @@ class StreamState:
     last_frame: bytes | None = None
     status: str = "starting"
     stream_fps: int = 30
+    buffer_max: int = 0
+    last_gen_seconds: float = 0.0
+    last_chunk_playback_seconds: float = 0.0
 
 
 class StreamManager:
@@ -109,12 +182,17 @@ class StreamManager:
                     stream.thread.join(timeout=1.0)
             self._streams = {}
             self._cancel_event = threading.Event()
+            playback_fps = _env_fps("LTX2_PLAYBACK_FPS", config.fps or 24)
+            buffer_seconds = _env_float("LTX2_BUFFER_SECONDS", 4.0)
+            maxsize = int(playback_fps * buffer_seconds)
+            maxsize = max(60, min(maxsize, 2000))
             for stream_id in range(config.streams):
-                stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+                stream_queue: queue.Queue[bytes] = queue.Queue(maxsize=maxsize)
                 stream = StreamState(
                     queue=stream_queue,
                     thread=threading.Thread(),
-                    stream_fps=_env_fps("LTX2_STREAM_FPS", 30),
+                    stream_fps=playback_fps,
+                    buffer_max=maxsize,
                 )
                 thread = threading.Thread(
                     target=self._run_stream,
@@ -141,36 +219,56 @@ class StreamManager:
         cancel_event: threading.Event,
     ) -> None:
         status_text = "Starting LTX-2 stream..."
-        stream.last_frame = _encode_frame(render_status_frame(status_text, config.width, config.height))
-        _queue_frame(stream.queue, stream.last_frame)
+        stream.last_frame = _encode_frame(render_status_frame(status_text, current_config.width, current_config.height))
+        _queue_frame(stream.queue, stream.last_frame, drop_old=True)
         try:
             while not cancel_event.is_set() and not inference_enabled.is_set():
-                status_frame = render_status_frame("Waiting for POST /api/config", config.width, config.height)
+                status_frame = render_status_frame("Waiting for POST /api/config", current_config.width, current_config.height)
                 stream.last_frame = _encode_frame(status_frame)
-                _queue_frame(stream.queue, stream.last_frame)
-                time.sleep(1.0 / max(1, config.fps))
+                _queue_frame(stream.queue, stream.last_frame, drop_old=True)
+                time.sleep(1.0 / max(1, current_config.fps))
             if cancel_event.is_set():
                 return
-            if config.mode == "fever":
-                frame_iter = generate_fever_dream_frames(config, cancel_event)
-            else:
-                frame_iter = generate_mood_mirror_frames(config, latest_camera_state, cancel_event)
-            for frame in frame_iter:
-                if cancel_event.is_set():
-                    break
-                stream.last_frame = _encode_frame(frame)
-                _queue_frame(stream.queue, stream.last_frame)
+            playback_fps = stream.stream_fps
+            buffer_seconds = _env_float("LTX2_BUFFER_SECONDS", 4.0)
+            low_water_seconds = _env_float("LTX2_LOW_WATER_SECONDS", 1.0)
+            drop_old = _env_bool("LTX2_DROP_OLD_FRAMES", True)
+            while not cancel_event.is_set():
+                cfg = current_config
+                queued_seconds = stream.queue.qsize() / max(1, playback_fps)
+                if queued_seconds >= buffer_seconds:
+                    time.sleep(0.01)
+                    continue
+                dynamic_low_water = max(low_water_seconds, stream.last_gen_seconds)
+                if queued_seconds > dynamic_low_water and not stream.queue.empty():
+                    time.sleep(0.005)
+                    continue
+                start_time = time.time()
+                if cfg.mode == "fever":
+                    frames = generate_fever_dream_chunk(cfg, cancel_event)
+                else:
+                    frames = generate_mood_mirror_chunk(cfg, latest_camera_state, cancel_event)
+                stream.last_gen_seconds = max(0.0, time.time() - start_time)
+                stream.last_chunk_playback_seconds = len(frames) / max(1, playback_fps)
+                for frame in frames:
+                    if cancel_event.is_set():
+                        break
+                    stream.last_frame = _encode_frame(frame)
+                    _queue_frame(stream.queue, stream.last_frame, drop_old=drop_old)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Stream %s crashed: %s", stream_id, exc)
             error_frame = render_status_frame(f"Stream error: {exc}", config.width, config.height)
             stream.last_frame = _encode_frame(error_frame)
-            _queue_frame(stream.queue, stream.last_frame)
+            _queue_frame(stream.queue, stream.last_frame, drop_old=True)
 
 
-def _queue_frame(q: queue.Queue[bytes], frame: bytes) -> None:
+def _queue_frame(q: queue.Queue[bytes], frame: bytes, *, drop_old: bool) -> None:
     try:
         if q.full():
-            q.get_nowait()
+            if drop_old:
+                q.get_nowait()
+            else:
+                return
         q.put_nowait(frame)
     except queue.Full:
         return
@@ -188,6 +286,20 @@ def _encode_frame(frame: Image.Image | np.ndarray) -> bytes:
 
 
 def _validate_config(config: RunConfig) -> RunConfig:
+    for label, value in (
+        ("prompt", config.prompt),
+        ("negative_prompt", config.negative_prompt),
+        ("base_prompt", config.base_prompt),
+    ):
+        hits = _find_blocked_terms(value)
+        if hits:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Disallowed content in {label}. "
+                    "This app blocks minors/children and NSFW/sexual content."
+                ),
+            )
     if config.width % 32 != 0 or config.height % 32 != 0:
         raise HTTPException(status_code=400, detail="Width and height must be multiples of 32.")
     if config.output_mode == "upscaled" and (config.width % 64 != 0 or config.height % 64 != 0):
@@ -207,6 +319,20 @@ def _validate_config(config: RunConfig) -> RunConfig:
     config.motion = float(np.clip(config.motion, 0.0, 1.0))
     config.identity_strength = float(np.clip(config.identity_strength, 0.0, 1.0))
     return config
+
+
+def _should_restart_streams(old: RunConfig, new: RunConfig) -> bool:
+    if old.mode != new.mode:
+        return True
+    if old.width != new.width or old.height != new.height:
+        return True
+    if old.fps != new.fps:
+        return True
+    if old.streams != new.streams:
+        return True
+    if old.output_mode != new.output_mode:
+        return True
+    return False
 
 
 def _estimate_mood(frame_bgr: np.ndarray) -> dict[str, Any]:
@@ -264,6 +390,39 @@ latest_mood: dict[str, Any] | None = None
 latest_camera_lock = threading.Lock()
 inference_enabled = threading.Event()
 health_status: dict[str, Any] = {"pipeline_loaded": False, "errors": {}, "pipelines": {}}
+_settings_mtime: float | None = None
+
+
+def _settings_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "settings.conf")
+
+
+def _start_settings_watcher() -> None:
+    def _watch() -> None:
+        global _settings_mtime
+        poll_seconds = _env_float("LTX2_SETTINGS_POLL_SECONDS", 2.0)
+        settings_path = _settings_path()
+        while True:
+            try:
+                mtime = os.path.getmtime(settings_path)
+                if _settings_mtime is None:
+                    _settings_mtime = mtime
+                elif mtime != _settings_mtime:
+                    _settings_mtime = mtime
+                    load_settings_conf(override=True)
+                    if inference_enabled.is_set():
+                        stream_manager.restart(current_config, _get_latest_camera_state)
+                        LOGGER.info("settings.conf changed; streams restarted.")
+                    else:
+                        LOGGER.info("settings.conf changed; reloaded.")
+            except FileNotFoundError:
+                _settings_mtime = None
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("settings.conf watcher error")
+            time.sleep(max(0.2, poll_seconds))
+
+    thread = threading.Thread(target=_watch, name="settings-watcher", daemon=True)
+    thread.start()
 
 
 def _gemma_status() -> dict[str, Any]:
@@ -291,6 +450,7 @@ def _startup() -> None:
     health_status.update(_gemma_status())
     health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
     health_status["inference_enabled"] = inference_enabled.is_set()
+    _start_settings_watcher()
     if not health_status.get("gemma_ok", False):
         health_status["errors"]["gemma"] = health_status.get("gemma_reason")
     if health_status["autostart"]:
@@ -326,6 +486,7 @@ async def set_config(request: Request) -> RunConfig:
     if gemma_status.get("gemma_required") and not gemma_status.get("gemma_ok", False):
         LOGGER.warning("Gemma missing; streams will show status frames. (%s)", gemma_status.get("gemma_reason"))
     global current_config
+    restart_streams = _should_restart_streams(current_config, config)
     current_config = config
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
     if not inference_enabled.is_set():
@@ -339,7 +500,8 @@ async def set_config(request: Request) -> RunConfig:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("LTX-2 warmup failed: %s", exc)
             health_status["errors"][current_config.output_mode] = str(exc)
-    stream_manager.restart(current_config, _get_latest_camera_state)
+    if restart_streams:
+        stream_manager.restart(current_config, _get_latest_camera_state)
     return current_config
 
 
@@ -410,14 +572,14 @@ def stream(stream_id: int) -> StreamingResponse:
 
     def generator() -> bytes:
         interval = 1.0 / max(1, stream_state.stream_fps)
+        next_frame_time = time.monotonic()
         while True:
             frame = stream_state.last_frame
-            while True:
-                try:
-                    frame = stream_state.queue.get_nowait()
-                    stream_state.last_frame = frame
-                except queue.Empty:
-                    break
+            try:
+                frame = stream_state.queue.get(timeout=interval * 0.5)
+                stream_state.last_frame = frame
+            except queue.Empty:
+                frame = stream_state.last_frame
             if frame is None:
                 placeholder = render_status_frame("Waiting for frames...", current_config.width, current_config.height)
                 frame = _encode_frame(placeholder)
@@ -427,7 +589,13 @@ def stream(stream_id: int) -> StreamingResponse:
                 b"Content-Type: image/jpeg\r\n"
                 b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
             )
-            time.sleep(interval)
+            next_frame_time += interval
+            now = time.monotonic()
+            if next_frame_time < now - interval:
+                next_frame_time = now + interval
+            sleep_for = next_frame_time - now
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
     return StreamingResponse(generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 
