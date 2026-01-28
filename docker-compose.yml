@@ -70,3 +70,40 @@ services:
               capabilities: [gpu]
     gpus: all
     ipc: host
+
+  ai-mood-mirror-distilled:
+    image: "${IMAGE_TAG:-ai-mood-mirror:latest}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python3", "-m", "app", "--host", "0.0.0.0", "--port", "8000"]
+    profiles: ["distilled"]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-all}
+      LTX2_BACKEND: pipelines
+      LTX2_OUTPUT_MODE: ${LTX2_OUTPUT_MODE:-native}
+      LTX2_USE_DISTILLED: 1
+      LTX2_DISTILLED_FP8_FILE: ${LTX2_DISTILLED_FP8_FILE:-ltx-2-19b-distilled-fp8.safetensors}
+      LTX2_SNAPSHOT_DIR: ${LTX2_SNAPSHOT_DIR:-/models/huggingface/hub/models--Lightricks--LTX-2}
+      LTX2_STREAMS: ${LTX2_STREAMS:-1}
+      LTX2_GEMMA_ROOT: ${LTX2_GEMMA_ROOT:-/models/gemma}
+      LTX2_SPATIAL_UPSAMPLER_PATH: ${LTX2_SPATIAL_UPSAMPLER_PATH:-/models/ltx2/ltx-2-spatial-upscaler-x2-1.0.safetensors}
+      LTX2_DISTILLED_LORA_PATH: ${LTX2_DISTILLED_LORA_PATH:-/models/ltx2/ltx-2-distilled-lora-x2-1.0.safetensors}
+      LTX2_DISTILLED_LORA_STRENGTH: ${LTX2_DISTILLED_LORA_STRENGTH:-0.6}
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
+      TRANSFORMERS_CACHE: /models/huggingface/transformers
+    volumes:
+      - ./models:/models
+    ports:
+      - "${PORT:-8000}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    gpus: all
+    ipc: host

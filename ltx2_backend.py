@@ -17,8 +17,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from ltx_pipelines.ti2vid_one_stage import TI2VidOneStagePipeline
-from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from ltx_pipelines.distilled import DistilledPipeline
 
 LOGGER = logging.getLogger("ltx2_backend")
 
@@ -163,11 +162,16 @@ def _resolve_checkpoint_path() -> str:
         else:
             return str(path)
 
-    use_distilled = os.getenv("LTX2_USE_DISTILLED", "0").lower() in {"1", "true", "yes", "on"}
-    fp8_file = os.getenv(
-        "LTX2_FP8_FILE",
-        "ltx-2-19b-distilled-fp8.safetensors" if use_distilled else DEFAULT_FP8_FILE,
-    )
+    env_use_distilled = os.getenv("LTX2_USE_DISTILLED")
+    use_distilled = env_use_distilled is None or env_use_distilled.lower() in {"1", "true", "yes", "on"}
+    distilled_file = os.getenv("LTX2_DISTILLED_FP8_FILE", "ltx-2-19b-distilled-fp8.safetensors")
+    fallback_file = DEFAULT_FP8_FILE
+    if use_distilled:
+        fp8_file = distilled_file
+        if os.getenv("LTX2_FP8_FILE") and os.getenv("LTX2_FP8_FILE") != distilled_file:
+            LOGGER.info("Ignoring LTX2_FP8_FILE because LTX2_USE_DISTILLED=1 (using %s).", distilled_file)
+    else:
+        fp8_file = os.getenv("LTX2_FP8_FILE", fallback_file)
     snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
     if snapshot_dir:
         snapshot_path = pathlib.Path(snapshot_dir).expanduser()
@@ -187,6 +191,10 @@ def _resolve_checkpoint_path() -> str:
             for root in candidate_roots:
                 candidate = root / fp8_file
                 if candidate.is_file():
+                    if use_distilled:
+                        LOGGER.info("Using distilled checkpoint: %s", candidate)
+                    else:
+                        LOGGER.info("Using checkpoint: %s", candidate)
                     return str(candidate)
         else:
             LOGGER.warning(
@@ -211,8 +219,17 @@ def _resolve_checkpoint_path() -> str:
             reverse=True,
         )
         if candidates:
-            LOGGER.info("LTX-2 checkpoint selected=%s", candidates[0])
+            if use_distilled:
+                LOGGER.info("Using distilled checkpoint: %s", candidates[0])
+            else:
+                LOGGER.info("Using checkpoint: %s", candidates[0])
             return str(candidates[0])
+
+    if use_distilled:
+        raise RuntimeError(
+            "DistilledPipeline requires distilled checkpoint. Run download script "
+            "to fetch ltx-2-19b-distilled-fp8.safetensors."
+        )
 
     raise RuntimeError(
         "No fp8 checkpoint could be resolved. "
@@ -245,7 +262,7 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
             "Gemma is required. Set LTX2_GEMMA_ROOT to a directory created by "
             f"download_model.sh ({DEFAULT_GEMMA_MODEL_ID}). ({gemma_reason})"
         )
-    spatial_upsampler_path = _require_env_path("LTX2_SPATIAL_UPSAMPLER_PATH", required=output_mode == "upscaled")
+    spatial_upsampler_path = _require_env_path("LTX2_SPATIAL_UPSAMPLER_PATH", required=True)
     distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=False)
     distilled_lora_strength = _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6)
     loras: list[dict[str, object]] = []
@@ -376,41 +393,26 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
         if cache_key in _PIPELINES:
             return _PIPELINES[cache_key]
 
-        artifacts = _resolve_artifacts(output_mode)
+        artifacts = _resolve_artifacts("native")
         dtype = torch.bfloat16
         enable_fp8 = os.getenv("LTX2_ENABLE_FP8", "1").lower() in {"1", "true", "yes", "on"}
 
-        if output_mode == "upscaled":
-            pipe_cls = TI2VidTwoStagesPipeline
-            distilled_lora = None
-            if artifacts.distilled_lora_path:
-                distilled_lora = {
-                    "path": artifacts.distilled_lora_path,
-                    "strength": artifacts.distilled_lora_strength,
-                }
-            init_kwargs = {
-                "checkpoint_path": artifacts.checkpoint_path,
-                "gemma_root": artifacts.gemma_root,
-                "spatial_upsampler_path": artifacts.spatial_upsampler_path,
-                "distilled_lora": distilled_lora,
-                "loras": artifacts.loras,
-                "fp8transformer": enable_fp8,
-                "torch_dtype": dtype,
-            }
-        else:
-            pipe_cls = TI2VidOneStagePipeline
-            init_kwargs = {
-                "checkpoint_path": artifacts.checkpoint_path,
-                "gemma_root": artifacts.gemma_root,
-                "loras": artifacts.loras,
-                "fp8transformer": enable_fp8,
-                "torch_dtype": dtype,
-            }
+        pipe_cls = DistilledPipeline
+        init_kwargs = {
+            "checkpoint_path": artifacts.checkpoint_path,
+            "spatial_upsampler_path": artifacts.spatial_upsampler_path,
+            "gemma_root": artifacts.gemma_root,
+            "loras": artifacts.loras,
+            "device": device,
+            "fp8transformer": enable_fp8,
+        }
 
-        LOGGER.info("Loading LTX-2 pipeline: mode=%s class=%s", output_mode, pipe_cls.__name__)
+        LOGGER.info("Using DistilledPipeline (fast inference)")
         pipe = _instantiate_pipeline(pipe_cls, init_kwargs, output_mode=output_mode)
         if hasattr(pipe, "to"):
             pipe.to(device)
+        if hasattr(pipe, "eval"):
+            pipe.eval()
         call_signature = inspect.signature(pipe.__call__)
         supports_output_path = any(name in call_signature.parameters for name in ("output_path", "output"))
         required_params = [
@@ -570,6 +572,7 @@ def _build_pipeline_kwargs(
     params = signature.parameters
     param_names = set(params.keys())
     kwargs: dict[str, object] = {}
+    is_distilled = isinstance(pipe, DistilledPipeline)
 
     if not any(name in param_names for name in ("prompt", "text")):
         raise RuntimeError("LTX-2 pipeline does not accept a prompt argument.")
@@ -580,7 +583,8 @@ def _build_pipeline_kwargs(
     _assign_first_present(param_names, kwargs, num_frames, ["num_frames", "video_length", "frames"])
     _assign_first_present(param_names, kwargs, fps, ["fps", "frame_rate"])
     _assign_first_present(param_names, kwargs, guidance_scale, ["guidance_scale", "cfg_scale", "cfg_guidance_scale"])
-    _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
+    if not is_distilled:
+        _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
     if output_path and any(name in param_names for name in ("output_path", "output")):
         _assign_first_present(param_names, kwargs, output_path, ["output_path", "output"])
 

@@ -10,6 +10,10 @@ LTX2_MODEL_ID="${LTX2_MODEL_ID:-Lightricks/LTX-2}"
 LTX2_FP4_FILE="${LTX2_FP4_FILE:-ltx-2-19b-dev-fp4.safetensors}"
 LTX2_SPATIAL_UPSCALER_FILE="${LTX2_SPATIAL_UPSCALER_FILE:-ltx-2-spatial-upscaler-x2-1.0.safetensors}"
 LTX2_TEMPORAL_UPSCALER_FILE="${LTX2_TEMPORAL_UPSCALER_FILE:-ltx-2-temporal-upscaler-x2-1.0.safetensors}"
+LTX2_USE_DISTILLED="${LTX2_USE_DISTILLED:-1}"
+LTX2_DISTILLED_FP8_FILE="${LTX2_DISTILLED_FP8_FILE:-ltx-2-19b-distilled-fp8.safetensors}"
+LTX2_DISTILLED_FP4_FILE="${LTX2_DISTILLED_FP4_FILE:-ltx-2-19b-distilled-fp4.safetensors}"
+LTX2_DISTILLED_LORA_FILE="${LTX2_DISTILLED_LORA_FILE:-ltx-2-19b-distilled-lora-384.safetensors}"
 GEMMA_MODEL_ID="${GEMMA_MODEL_ID:-google/gemma-3-12b-it}"
 GEMMA_DIR="${GEMMA_DIR:-${MODELS_DIR}/gemma}"
 
@@ -20,6 +24,7 @@ mkdir -p "${HUB_CACHE_DIR}"
 export HF_HOME="${HF_HOME_DIR}"
 export HUGGINGFACE_HUB_CACHE="${HUB_CACHE_DIR}"
 export LTX2_MODEL_ID LTX2_FP4_FILE LTX2_SPATIAL_UPSCALER_FILE LTX2_TEMPORAL_UPSCALER_FILE
+export LTX2_USE_DISTILLED LTX2_DISTILLED_FP8_FILE LTX2_DISTILLED_FP4_FILE LTX2_DISTILLED_LORA_FILE
 export GEMMA_MODEL_ID GEMMA_DIR
 
 usage() {
@@ -28,6 +33,10 @@ Usage: ./download_model.sh [ltx2|gemma|all]
 Environment overrides:
   LTX2_MODEL_ID (default: Lightricks/LTX-2)
   LTX2_FP4_FILE (default: ltx-2-19b-dev-fp4.safetensors)
+  LTX2_USE_DISTILLED (default: 1)
+  LTX2_DISTILLED_FP8_FILE (default: ltx-2-19b-distilled-fp8.safetensors)
+  LTX2_DISTILLED_FP4_FILE (default: ltx-2-19b-distilled-fp4.safetensors)
+  LTX2_DISTILLED_LORA_FILE (default: ltx-2-19b-distilled-lora-384.safetensors)
   LTX2_SPATIAL_UPSCALER_FILE (default: ltx-2-spatial-upscaler-x2-1.0.safetensors)
   LTX2_TEMPORAL_UPSCALER_FILE (default: ltx-2-temporal-upscaler-x2-1.0.safetensors)
   GEMMA_MODEL_ID (default: google/gemma-3-12b)
@@ -52,6 +61,10 @@ cache_dir = os.environ["HUGGINGFACE_HUB_CACHE"]
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
 fp4 = os.environ["LTX2_FP4_FILE"]
+use_distilled = os.environ.get("LTX2_USE_DISTILLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+distilled_fp8 = os.environ["LTX2_DISTILLED_FP8_FILE"]
+distilled_fp4 = os.environ["LTX2_DISTILLED_FP4_FILE"]
+distilled_lora = os.environ["LTX2_DISTILLED_LORA_FILE"]
 spatial = os.environ["LTX2_SPATIAL_UPSCALER_FILE"]
 temporal = os.environ["LTX2_TEMPORAL_UPSCALER_FILE"]
 
@@ -73,6 +86,9 @@ allow_patterns = [
     "**/pytorch_model.bin",
     "**/*.safetensors",
     fp4,
+    distilled_fp8,
+    distilled_fp4,
+    distilled_lora,
     spatial,
     temporal,
 ]
@@ -108,11 +124,37 @@ if missing_weights:
 paths = {
     "snapshot_dir": snapshot_dir,
     "fp4": os.path.join(snapshot_dir, fp4),
+    "distilled_fp8": os.path.join(snapshot_dir, distilled_fp8),
+    "distilled_fp4": os.path.join(snapshot_dir, distilled_fp4),
+    "distilled_lora": os.path.join(snapshot_dir, distilled_lora),
     "spatial_upscaler": os.path.join(snapshot_dir, spatial),
     "temporal_upscaler": os.path.join(snapshot_dir, temporal),
 }
 
-missing_optional = [k for k in ("fp4", "spatial_upscaler", "temporal_upscaler") if not os.path.isfile(paths[k])]
+mode = "distilled" if use_distilled else "dev"
+missing_required = []
+missing_optional = []
+if use_distilled:
+    if not os.path.isfile(paths["distilled_fp8"]):
+        missing_required.append("distilled_fp8")
+    if not os.path.isfile(paths["distilled_lora"]):
+        missing_required.append("distilled_lora")
+    if not os.path.isfile(paths["distilled_fp4"]):
+        missing_optional.append("distilled_fp4")
+else:
+    if not os.path.isfile(paths["fp4"]):
+        missing_optional.append("fp4")
+
+for key in ("spatial_upscaler", "temporal_upscaler"):
+    if not os.path.isfile(paths[key]):
+        missing_optional.append(key)
+
+if missing_required:
+    print("Missing required distilled artifacts:", missing_required, file=sys.stderr)
+    for k in missing_required:
+        print(f"  - {k}: {paths[k]}", file=sys.stderr)
+    raise SystemExit(4)
+
 if missing_optional:
     print("Warning: missing optional top-level artifacts:", missing_optional, file=sys.stderr)
     for k in missing_optional:
@@ -120,9 +162,18 @@ if missing_optional:
 
 print("OK:")
 print(f"  snapshot_dir: {paths['snapshot_dir']}")
-print(f"  fp4:          {paths['fp4']}")
+print(f"  mode:         {mode}")
+if use_distilled:
+    print(f"  checkpoint:   {paths['distilled_fp8']}")
+    print(f"  distilled_lora: {paths['distilled_lora']}")
+    print(f"  distilled_fp4:  {paths['distilled_fp4']}")
+else:
+    print(f"  fp4:          {paths['fp4']}")
+spatial_ok = os.path.isfile(paths["spatial_upscaler"])
+temporal_ok = os.path.isfile(paths["temporal_upscaler"])
 print(f"  spatial:      {paths['spatial_upscaler']}")
 print(f"  temporal:     {paths['temporal_upscaler']}")
+print(f"  upscalers:   spatial {'OK' if spatial_ok else 'MISSING'}  temporal {'OK' if temporal_ok else 'MISSING'}")
 PY
   echo "Done."
   echo "Cache: ${HUGGINGFACE_HUB_CACHE}"
@@ -171,7 +222,6 @@ print("OK:")
 print(f"  gemma_dir:    {local_dir}")
 print(f"  model_id:     {model_id}")
 PY
-  then
     if [[ -z "${HF_TOKEN:-}" ]]; then
       echo "Gemma requires accepting the HF license and using HF_TOKEN. Visit the model page and accept, then export HF_TOKEN=..." >&2
     fi
