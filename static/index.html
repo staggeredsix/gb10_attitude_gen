@@ -173,13 +173,39 @@
           <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
         </div>
 
-        <button id="applyButton" type="button">Apply settings</button>
+        <div class="row">
+          <button id="startButton" type="button">Start dreaming</button>
+          <button id="applyButton" type="button">Update dream</button>
+        </div>
         <div class="status" id="status"></div>
       </section>
 
       <section class="panel">
         <h3>Streams</h3>
         <div class="grid" id="streamGrid"></div>
+      </section>
+
+      <section class="panel">
+        <h3>Video-to-Video (IC-LoRA)</h3>
+        <div class="dropzone" id="v2vDropzone">
+          <strong>Drop a video here</strong> or click to select a file.
+          <input id="v2vFile" type="file" accept="video/*" style="display: none;" />
+        </div>
+        <label for="v2vPrompt">V2V Prompt</label>
+        <textarea id="v2vPrompt" placeholder="The main character runs down a street"></textarea>
+        <div class="row">
+          <div>
+            <label for="v2vStrength">Strength</label>
+            <input id="v2vStrength" type="number" min="0" max="1" step="0.05" value="0.7" />
+          </div>
+          <div>
+            <label for="v2vSeconds">Seconds</label>
+            <input id="v2vSeconds" type="number" min="1" max="8" step="1" value="4" />
+          </div>
+        </div>
+        <button id="v2vSubmit" type="button">Generate Video</button>
+        <div class="status" id="v2vStatus"></div>
+        <video id="v2vPreview" controls style="width: 100%; margin-top: 8px; display: none;"></video>
       </section>
     </main>
 
@@ -204,6 +230,7 @@
       const basePromptInput = document.getElementById("basePrompt");
       const identityStrengthInput = document.getElementById("identityStrength");
       const applyButton = document.getElementById("applyButton");
+      const startButton = document.getElementById("startButton");
       const status = document.getElementById("status");
       const streamGrid = document.getElementById("streamGrid");
       const moodControls = document.getElementById("moodControls");
@@ -212,6 +239,14 @@
       const webcamVideo = document.getElementById("webcamVideo");
       const webcamCanvas = document.getElementById("webcamCanvas");
       const webcamCtx = webcamCanvas.getContext("2d");
+      const v2vDropzone = document.getElementById("v2vDropzone");
+      const v2vFile = document.getElementById("v2vFile");
+      const v2vPrompt = document.getElementById("v2vPrompt");
+      const v2vStrength = document.getElementById("v2vStrength");
+      const v2vSeconds = document.getElementById("v2vSeconds");
+      const v2vSubmit = document.getElementById("v2vSubmit");
+      const v2vStatus = document.getElementById("v2vStatus");
+      const v2vPreview = document.getElementById("v2vPreview");
       let webcamStream = null;
       let webcamInterval = null;
       let currentStreamsCount = parseInt(streamsInput.value || "1", 10);
@@ -219,6 +254,10 @@
 
       function setStatus(message) {
         status.textContent = message;
+      }
+
+      function setV2vStatus(message) {
+        v2vStatus.textContent = message;
       }
 
       function updateMoodControls() {
@@ -243,8 +282,8 @@
         };
       }
 
-      async function applyConfig() {
-        setStatus("Applying settings...");
+      async function applyConfig({ start = false } = {}) {
+        setStatus(start ? "Starting dream..." : "Updating dream...");
         const config = buildConfig();
         const response = await fetch("/api/config", {
           method: "POST",
@@ -257,7 +296,10 @@
           return;
         }
         const updated = await response.json();
-        setStatus("Settings applied.");
+        if (start) {
+          await fetch("/api/start", { method: "POST" });
+        }
+        setStatus(start ? "Dream started." : "Dream updated.");
         if (updated.streams !== currentStreamsCount) {
           currentStreamsCount = updated.streams;
           buildStreams(updated.streams);
@@ -284,6 +326,49 @@
             el.volume = muted ? 0.0 : 1.0;
           }
         });
+      }
+
+      function handleV2vFile(file) {
+        if (!file) {
+          return;
+        }
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        v2vFile.files = dt.files;
+        setV2vStatus(`Selected: ${file.name}`);
+      }
+
+      async function submitV2v() {
+        const file = v2vFile.files[0];
+        if (!file) {
+          setV2vStatus("Please select a video file.");
+          return;
+        }
+        if (!v2vPrompt.value.trim()) {
+          setV2vStatus("Please enter a prompt.");
+          return;
+        }
+        setV2vStatus("Generating video...");
+        const form = new FormData();
+        form.append("file", file);
+        form.append("prompt", v2vPrompt.value.trim());
+        form.append("strength", String(v2vStrength.value || "0.7"));
+        form.append("seconds", String(v2vSeconds.value || "4"));
+        try {
+          const response = await fetch("/api/v2v", { method: "POST", body: form });
+          if (!response.ok) {
+            const data = await response.json();
+            setV2vStatus(`Error: ${data.detail || "request failed"}`);
+            return;
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          v2vPreview.src = url;
+          v2vPreview.style.display = "block";
+          setV2vStatus("Done.");
+        } catch (err) {
+          setV2vStatus(`Error: ${err}`);
+        }
       }
 
       async function loadConfig() {
@@ -368,7 +453,8 @@
       }
 
       modeSelect.addEventListener("change", updateMoodControls);
-      applyButton.addEventListener("click", applyConfig);
+      startButton.addEventListener("click", () => applyConfig({ start: true }));
+      applyButton.addEventListener("click", () => applyConfig({ start: false }));
       muteToggle.addEventListener("change", applyMuteState);
       resolutionSelect.addEventListener("change", () => {
         if (resolutionSelect.value === "custom") {
@@ -381,6 +467,20 @@
         }
       });
       webcamToggle.addEventListener("click", toggleWebcam);
+      v2vDropzone.addEventListener("click", () => v2vFile.click());
+      v2vDropzone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        v2vDropzone.classList.add("dragover");
+      });
+      v2vDropzone.addEventListener("dragleave", () => v2vDropzone.classList.remove("dragover"));
+      v2vDropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        v2vDropzone.classList.remove("dragover");
+        const file = event.dataTransfer.files[0];
+        handleV2vFile(file);
+      });
+      v2vFile.addEventListener("change", () => handleV2vFile(v2vFile.files[0]));
+      v2vSubmit.addEventListener("click", submitV2v);
 
       loadConfig();
       applyMuteState();

@@ -23,6 +23,7 @@ from settings_loader import load_settings_conf
 load_settings_conf()
 
 from ltx_pipelines.distilled import DistilledPipeline
+from ltx_pipelines.ic_lora import ICLoraPipeline
 
 LOGGER = logging.getLogger("ltx2_backend")
 
@@ -576,9 +577,113 @@ def _load_pipeline(output_mode: str, device: str = "cuda") -> object:
     return _load_pipelines_pipeline(output_mode, device=device)
 
 
+def _load_ic_lora_pipeline(device: str = "cuda") -> object:
+    cache_key = f"pipelines:ic_lora:{device}"
+    with _PIPELINE_LOCK:
+        if cache_key in _PIPELINES:
+            return _PIPELINES[cache_key]
+
+        artifacts = _resolve_artifacts("native")
+        enable_fp8 = os.getenv("LTX2_ENABLE_FP8", "1").lower() in {"1", "true", "yes", "on"}
+        loras: list[dict[str, object]] = []
+        lora_path = os.getenv("LTX2_IC_LORA_PATH")
+        if lora_path:
+            lora_strength = _env_float("LTX2_IC_LORA_STRENGTH", 0.8)
+            loras.append({"path": lora_path, "strength": lora_strength, "ops": []})
+        else:
+            LOGGER.warning("ICLoraPipeline running without IC-LoRA weights; v2v control may be weak.")
+
+        pipe_cls = ICLoraPipeline
+        init_kwargs = {
+            "checkpoint_path": artifacts.checkpoint_path,
+            "spatial_upsampler_path": artifacts.spatial_upsampler_path,
+            "gemma_root": artifacts.gemma_root,
+            "loras": loras,
+            "device": device,
+            "fp8transformer": enable_fp8,
+        }
+        LOGGER.info("Loading ICLoraPipeline for v2v")
+        pipe = _instantiate_pipeline(pipe_cls, init_kwargs, output_mode="native")
+        if hasattr(pipe, "to"):
+            pipe.to(device)
+        if hasattr(pipe, "eval"):
+            pipe.eval()
+
+        _PIPELINES[cache_key] = pipe
+        return pipe
+
+
 def warmup_pipeline(output_mode: str) -> dict[str, str]:
     pipe = _load_pipeline(output_mode)
     return {"pipeline_class": pipe.__class__.__name__, "backend": _get_backend()}
+
+
+def generate_v2v_video(
+    *,
+    input_video_path: str,
+    prompt: str,
+    width: int,
+    height: int,
+    fps: int,
+    num_frames: int,
+    seed: int | None,
+    strength: float,
+    output_path: str,
+    ) -> str:
+    pipe = _load_ic_lora_pipeline()
+    if width % 64 != 0 or height % 64 != 0:
+        raise RuntimeError("V2V requires width and height to be multiples of 64.")
+    if num_frames < 1:
+        raise RuntimeError("num_frames must be >= 1.")
+    num_frames = _adjust_num_frames(num_frames)
+    video_conditioning = [(input_video_path, strength)]
+    kwargs = _build_pipeline_kwargs(
+        pipe,
+        prompt=prompt,
+        negative_prompt=_build_negative_prompt(prompt, ""),
+        width=width,
+        height=height,
+        num_frames=num_frames,
+        fps=fps,
+        guidance_scale=_env_float("LTX2_REALTIME_CFG", 1.0),
+        num_inference_steps=0,
+        seed=seed,
+        output_path=None,
+        images=[],
+    )
+    kwargs["video_conditioning"] = video_conditioning
+    kwargs["frame_rate"] = float(fps)
+    kwargs["tiling_config"] = None
+
+    with torch.no_grad():
+        result = pipe(**kwargs)
+    _store_audio_from_result(result)
+    if not isinstance(result, (tuple, list)) or len(result) < 1:
+        raise RuntimeError("ICLoraPipeline returned unexpected result.")
+    decoded_video = result[0]
+    def _no_grad_video_iter(video_iter):
+        with torch.inference_mode(False):
+            with torch.no_grad():
+                for chunk in video_iter:
+                    yield chunk
+    if hasattr(decoded_video, "__iter__") and not isinstance(decoded_video, (torch.Tensor, list)):
+        decoded_video = _no_grad_video_iter(decoded_video)
+    try:
+        from ltx_pipelines.utils.media_io import encode_video
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("encode_video is required for v2v output.") from exc
+    output_path = str(pathlib.Path(output_path))
+    with torch.inference_mode(False):
+        with torch.no_grad():
+            encode_video(
+                video=decoded_video,
+                fps=fps,
+                audio=result[1] if len(result) > 1 else None,
+                audio_sample_rate=int(float(os.getenv("LTX2_AUDIO_SAMPLE_RATE", "48000"))),
+                output_path=output_path,
+                video_chunks_number=None,
+            )
+    return output_path
 
 
 def render_status_frame(text: str, width: int, height: int) -> Image.Image:
@@ -1240,6 +1345,18 @@ def _resolve_chunk_settings(config) -> tuple[int, int, int]:
     return stage_width, stage_height, num_frames
 
 
+def _clamp_env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
 def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
@@ -1299,13 +1416,23 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
     temp_paths: list[str] = []
     chain_enabled = _env_bool("LTX2_CHAINING", True)
     chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+    chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
+    drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+    if os.getenv("LTX2_LOG_CHAINING") == "1":
+        LOGGER.info(
+            "Chaining: enabled=%s strength=%.3f frames=%s drop_prefix=%s",
+            chain_enabled,
+            chain_strength,
+            chain_frames,
+            drop_prefix,
+        )
     try:
         if chain_enabled:
             carry = _get_chain_frame("fever", cancel_event)
             if carry is not None:
                 carry_path = _write_temp_pil(carry)
                 temp_paths.append(carry_path)
-                images = [(carry_path, 0, chain_strength)]
+                images = [(carry_path, i, chain_strength) for i in range(chain_frames)]
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 5.0
         if realtime:
@@ -1334,6 +1461,8 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
                 images=images,
             )
         )
+        if drop_prefix > 0 and len(frames) > drop_prefix:
+            frames = frames[drop_prefix:]
         if frames:
             _set_chain_frame("fever", cancel_event, frames[-1])
         return frames
@@ -1435,6 +1564,16 @@ def generate_mood_mirror_chunk(
     images: list[tuple[str, int, float]] = []
     chain_enabled = _env_bool("LTX2_CHAINING", True)
     chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+    chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
+    drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+    if os.getenv("LTX2_LOG_CHAINING") == "1":
+        LOGGER.info(
+            "Chaining: enabled=%s strength=%.3f frames=%s drop_prefix=%s",
+            chain_enabled,
+            chain_strength,
+            chain_frames,
+            drop_prefix,
+        )
     try:
         image_path = _write_temp_image(camera_frame)
         temp_paths.append(image_path)
@@ -1444,7 +1583,7 @@ def generate_mood_mirror_chunk(
             if carry is not None:
                 carry_path = _write_temp_pil(carry)
                 temp_paths.append(carry_path)
-                images.append((carry_path, 0, chain_strength))
+                images.extend((carry_path, i, chain_strength) for i in range(chain_frames))
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 4.0
         if realtime:
@@ -1473,6 +1612,8 @@ def generate_mood_mirror_chunk(
                 images=images,
             )
         )
+        if drop_prefix > 0 and len(frames) > drop_prefix:
+            frames = frames[drop_prefix:]
         if frames:
             _set_chain_frame("mood", cancel_event, frames[-1])
         return frames

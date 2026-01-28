@@ -6,12 +6,14 @@ import os
 import queue
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +28,7 @@ from ltx2_backend import (
     backend_requires_gemma,
     generate_fever_dream_chunk,
     generate_mood_mirror_chunk,
+    generate_v2v_video,
     get_latest_audio_wav,
     set_audio_stream_id,
     log_backend_configuration,
@@ -325,6 +328,42 @@ def _validate_config(config: RunConfig) -> RunConfig:
     return config
 
 
+def _validate_prompt_value(prompt: str) -> None:
+    hits = _find_blocked_terms(prompt)
+    if hits:
+        raise HTTPException(
+            status_code=400,
+            detail="Disallowed content in prompt. This app blocks minors/children and NSFW/sexual content.",
+        )
+
+
+def _round_down_to_multiple(x: int, m: int) -> int:
+    return max(m, (x // m) * m)
+
+
+def _transcode_video(input_path: str, output_path: str, *, width: int, height: int, fps: int) -> None:
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise HTTPException(status_code=400, detail="Failed to open uploaded video.")
+    source_fps = cap.get(cv2.CAP_PROP_FPS)
+    target_fps = fps if fps and fps > 0 else int(source_fps) if source_fps else current_config.fps
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, float(target_fps), (width, height))
+    if not writer.isOpened():
+        cap.release()
+        raise HTTPException(status_code=500, detail="Failed to initialize video writer.")
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            writer.write(resized)
+    finally:
+        cap.release()
+        writer.release()
+
+
 def _should_restart_streams(old: RunConfig, new: RunConfig) -> bool:
     if old.mode != new.mode:
         return True
@@ -453,7 +492,7 @@ def _gemma_status() -> dict[str, Any]:
 def _startup() -> None:
     log_backend_configuration(current_config.output_mode)
     health_status.update(_gemma_status())
-    health_status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
+    health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
     health_status["inference_enabled"] = inference_enabled.is_set()
     _start_settings_watcher()
     if not health_status.get("gemma_ok", False):
@@ -469,8 +508,6 @@ def _startup() -> None:
             health_status["errors"][current_config.output_mode] = str(exc)
     else:
         LOGGER.info("Autostart disabled; waiting for POST /api/config.")
-    if health_status["autostart"] and not inference_enabled.is_set():
-        inference_enabled.set()
     stream_manager.restart(current_config, _get_latest_camera_state)
     global current_streams_count
     current_streams_count = current_config.streams
@@ -501,8 +538,7 @@ async def set_config(request: Request) -> RunConfig:
     current_streams_count = config.streams
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
     if not inference_enabled.is_set():
-        inference_enabled.set()
-    health_status["inference_enabled"] = inference_enabled.is_set()
+        health_status["inference_enabled"] = inference_enabled.is_set()
     if not health_status.get("pipeline_loaded", False):
         try:
             info = warmup_pipeline(current_config.output_mode)
@@ -514,6 +550,85 @@ async def set_config(request: Request) -> RunConfig:
     if restart_streams:
         stream_manager.restart(current_config, _get_latest_camera_state)
     return current_config
+
+
+@app.post("/api/start")
+def start_inference() -> dict[str, Any]:
+    if not inference_enabled.is_set():
+        inference_enabled.set()
+    health_status["inference_enabled"] = inference_enabled.is_set()
+    if not health_status.get("pipeline_loaded", False):
+        try:
+            info = warmup_pipeline(current_config.output_mode)
+            health_status["pipeline_loaded"] = True
+            health_status["pipelines"][current_config.output_mode] = info
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("LTX-2 warmup failed: %s", exc)
+            health_status["errors"][current_config.output_mode] = str(exc)
+    return {"ok": True, "inference_enabled": inference_enabled.is_set()}
+
+
+@app.post("/api/v2v")
+async def v2v_endpoint(
+    file: UploadFile = File(...),
+    prompt: str = Form(...),
+    strength: float = Form(0.7),
+    width: int | None = Form(None),
+    height: int | None = Form(None),
+    fps: int | None = Form(None),
+    seconds: float | None = Form(4.0),
+    num_frames: int | None = Form(None),
+    seed: int | None = Form(None),
+) -> FileResponse:
+    _validate_prompt_value(prompt)
+    w = width or current_config.width
+    h = height or current_config.height
+    f = fps or current_config.fps
+    if w % 64 != 0 or h % 64 != 0:
+        adjusted_w = _round_down_to_multiple(w, 64)
+        adjusted_h = _round_down_to_multiple(h, 64)
+        LOGGER.info("V2V adjusted resolution: %sx%s -> %sx%s", w, h, adjusted_w, adjusted_h)
+        w, h = adjusted_w, adjusted_h
+    if w < 64 or h < 64:
+        raise HTTPException(status_code=400, detail="V2V resolution too small after adjustment.")
+    if num_frames is None:
+        num_frames = int(max(1, float(seconds or 0.0) * f))
+    if num_frames < 1:
+        raise HTTPException(status_code=400, detail="Invalid num_frames.")
+    if num_frames > 257:
+        LOGGER.info("V2V num_frames capped: %s -> 257", num_frames)
+        num_frames = 257
+    input_path = f"/tmp/v2v_{uuid.uuid4().hex}.mp4"
+    resized_path = f"/tmp/v2v_resized_{uuid.uuid4().hex}.mp4"
+    output_path = f"/tmp/v2v_out_{uuid.uuid4().hex}.mp4"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    with open(input_path, "wb") as fobj:
+        fobj.write(data)
+
+    def _cleanup(paths: list[str]) -> None:
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError:
+                LOGGER.warning("Failed to remove temp file: %s", path)
+
+    _transcode_video(input_path, resized_path, width=w, height=h, fps=f)
+    generate_v2v_video(
+        input_video_path=resized_path,
+        prompt=prompt,
+        width=w,
+        height=h,
+        fps=f,
+        num_frames=num_frames,
+        seed=seed,
+        strength=float(strength),
+        output_path=output_path,
+    )
+    tasks = BackgroundTasks()
+    tasks.add_task(_cleanup, [input_path, resized_path, output_path])
+    return FileResponse(output_path, media_type="video/mp4", background=tasks)
 
 
 def _get_latest_camera_state() -> tuple[np.ndarray | None, dict | None]:
@@ -551,12 +666,12 @@ def healthz(deep: bool = False) -> dict[str, Any]:
         health_status.update(_gemma_status())
         if not health_status.get("gemma_ok", False):
             health_status["errors"]["gemma"] = health_status.get("gemma_reason")
-        health_status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
+        health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
         health_status["inference_enabled"] = inference_enabled.is_set()
         return health_status
     status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
     status.update(_gemma_status())
-    status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
+    status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
     status["inference_enabled"] = inference_enabled.is_set()
     if not status.get("gemma_ok", False):
         status["errors"]["gemma"] = status.get("gemma_reason")
