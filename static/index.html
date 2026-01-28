@@ -129,6 +129,8 @@
           Mute audio (if available)
         </label>
 
+        <audio id="audioPlayer" controls loop style="width: 100%; margin-top: 8px;"></audio>
+
         <div class="row">
           <div>
             <label for="width">Width</label>
@@ -191,6 +193,7 @@
       const resolutionSelect = document.getElementById("resolution");
       const outputModeSelect = document.getElementById("outputMode");
       const muteToggle = document.getElementById("muteToggle");
+      const audioPlayer = document.getElementById("audioPlayer");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
       const fpsInput = document.getElementById("fps");
@@ -211,6 +214,8 @@
       const webcamCtx = webcamCanvas.getContext("2d");
       let webcamStream = null;
       let webcamInterval = null;
+      let currentStreamsCount = parseInt(streamsInput.value || "1", 10);
+      let lastAudioUpdate = 0;
 
       function setStatus(message) {
         status.textContent = message;
@@ -253,7 +258,10 @@
         }
         const updated = await response.json();
         setStatus("Settings applied.");
-        buildStreams(updated.streams);
+        if (updated.streams !== currentStreamsCount) {
+          currentStreamsCount = updated.streams;
+          buildStreams(updated.streams);
+        }
       }
 
       function buildStreams(count) {
@@ -298,7 +306,27 @@
         basePromptInput.value = config.base_prompt;
         identityStrengthInput.value = config.identity_strength;
         updateMoodControls();
+        currentStreamsCount = config.streams;
         buildStreams(config.streams);
+      }
+
+      async function pollAudioStatus() {
+        try {
+          const response = await fetch("/audio/status?stream=0");
+          if (!response.ok) return;
+          const status = await response.json();
+          if (!status.available) return;
+          if (status.updated_at && status.updated_at !== lastAudioUpdate) {
+            lastAudioUpdate = status.updated_at;
+            audioPlayer.src = `/audio/latest.wav?stream=0&ts=${Date.now()}`;
+            audioPlayer.currentTime = 0;
+            if (!muteToggle.checked) {
+              audioPlayer.play().catch(() => {});
+            }
+          }
+        } catch (_) {
+          return;
+        }
       }
 
       async function sendMoodFrame() {
@@ -356,6 +384,7 @@
 
       loadConfig();
       applyMuteState();
+      setInterval(pollAudioStatus, 1500);
     </script>
   </body>
 </html>

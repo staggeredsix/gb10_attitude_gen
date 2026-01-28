@@ -17,6 +17,7 @@ WORKDIR /app
 
 COPY requirements.txt README.md app.py ltx2_backend.py settings_loader.py settings.conf ./
 COPY scripts/patch_ltx2_cache_models.py /app/patch_ltx2_cache_models.py
+COPY scripts/patch_ltx2_distilled_cfg.py /app/patch_ltx2_distilled_cfg.py
 COPY static ./static
 
 # Install your app deps (should NOT include torch; if it does, remove it)
@@ -26,6 +27,7 @@ RUN python3 -m pip install --upgrade pip \
 # Clone LTX-2 monorepo and install subpackages WITHOUT deps (prevents torch downgrade/replacement)
 RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /app/LTX-2 \
     && python3 /app/patch_ltx2_cache_models.py /app/LTX-2/packages/ltx-pipelines/src/ltx_pipelines/ti2vid_one_stage.py \
+    && python3 /app/patch_ltx2_distilled_cfg.py /app/LTX-2/packages/ltx-pipelines/src/ltx_pipelines/distilled.py \
     && python3 -m pip install -e /app/LTX-2/packages/ltx-core \
     && python3 -m pip install -e /app/LTX-2/packages/ltx-pipelines 
 

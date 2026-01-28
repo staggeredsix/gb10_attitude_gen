@@ -29,6 +29,9 @@ LOGGER = logging.getLogger("ltx2_backend")
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
 _CHAIN_FRAMES: dict[tuple[str, int], Image.Image] = {}
+_AUDIO_LOCK = threading.Lock()
+_LATEST_AUDIO_BY_STREAM: dict[int, tuple[bytes, float]] = {}
+_AUDIO_STREAM_LOCAL = threading.local()
 
 DEFAULT_GEMMA_MODEL_ID = "google/gemma-3-12b"
 DEFAULT_GEMMA_ROOT = "/models/gemma"
@@ -611,6 +614,8 @@ def _maybe_prompt_drift(prompt: str) -> str:
 
 
 def _build_negative_prompt(prompt: str, negative_prompt: str) -> str:
+    if _env_bool("LTX2_DISABLE_NEGATIVE_PROMPT", False):
+        return negative_prompt.strip() if negative_prompt else ""
     env_negative = os.getenv("LTX2_NEGATIVE_PROMPT", "").strip()
     parts = [negative_prompt.strip()] if negative_prompt else []
     if env_negative:
@@ -856,6 +861,58 @@ def _use_inference_mode() -> bool:
     return os.getenv("LTX2_USE_INFERENCE_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def set_audio_stream_id(stream_id: int | None) -> None:
+    if stream_id is None:
+        if hasattr(_AUDIO_STREAM_LOCAL, "stream_id"):
+            delattr(_AUDIO_STREAM_LOCAL, "stream_id")
+        return
+    _AUDIO_STREAM_LOCAL.stream_id = int(stream_id)
+
+
+def _current_audio_stream_id() -> int:
+    return int(getattr(_AUDIO_STREAM_LOCAL, "stream_id", 0))
+
+
+def _store_audio_from_result(result: object) -> None:
+    if not isinstance(result, (tuple, list)) or len(result) < 2:
+        return
+    audio = result[1]
+    if not torch.is_tensor(audio):
+        return
+    try:
+        import io
+        import wave
+        audio_tensor = audio.detach()
+        if audio_tensor.is_cuda:
+            audio_tensor = audio_tensor.cpu()
+        audio_tensor = audio_tensor.float()
+        if audio_tensor.dim() == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+        audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
+        pcm16 = (audio_tensor * 32767.0).to(torch.int16).cpu().numpy()
+        sample_rate = int(float(os.getenv("LTX2_AUDIO_SAMPLE_RATE", "48000")))
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(pcm16.shape[0])
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(pcm16.T.tobytes())
+        data = buffer.getvalue()
+        with _AUDIO_LOCK:
+            stream_id = _current_audio_stream_id()
+            _LATEST_AUDIO_BY_STREAM[stream_id] = (data, time.time())
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Failed to serialize audio output")
+
+
+def get_latest_audio_wav(stream_id: int = 0) -> tuple[bytes | None, float]:
+    with _AUDIO_LOCK:
+        data = _LATEST_AUDIO_BY_STREAM.get(stream_id)
+        if not data:
+            return None, 0.0
+        return data
+
+
 def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
     context = torch.inference_mode() if _use_inference_mode() else torch.no_grad()
     with context:
@@ -1039,6 +1096,7 @@ def _generate_video_chunk(
         images=images,
     )
     result = _call_ltx_pipeline(pipe, kwargs)
+    _store_audio_from_result(result)
     _log_vram("chunk_end")
     if output_path and pathlib.Path(output_path).is_file():
         try:
@@ -1108,6 +1166,7 @@ def _generate_diffusers_chunk(
             result = pipe(**kwargs)
         else:
             raise
+    _store_audio_from_result(result)
     with torch.no_grad():
         frames = _extract_video_frames_from_pipeline_result(result)
     for frame in frames:
@@ -1198,11 +1257,8 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             guidance_scale = 3.0 + config.dream_strength * 5.0
             if realtime:
                 guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-            if realtime and guidance_scale <= 1.0:
-                negative_prompt = ""
-            else:
-                negative_prompt = getattr(config, "negative_prompt", "") or ""
-                negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+            negative_prompt = getattr(config, "negative_prompt", "") or ""
+            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
             if realtime:
                 num_inference_steps = min(
@@ -1254,11 +1310,8 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         guidance_scale = 3.0 + config.dream_strength * 5.0
         if realtime:
             guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-        if realtime and guidance_scale <= 1.0:
-            negative_prompt = ""
-        else:
-            negative_prompt = getattr(config, "negative_prompt", "") or ""
-            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+        negative_prompt = getattr(config, "negative_prompt", "") or ""
+        negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
             num_inference_steps = min(
@@ -1332,11 +1385,8 @@ def generate_mood_mirror_chunk(
             guidance_scale = 3.0 + config.dream_strength * 4.0
             if realtime:
                 guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-            if realtime and guidance_scale <= 1.0:
-                negative_prompt = ""
-            else:
-                negative_prompt = getattr(config, "negative_prompt", "") or ""
-                negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+            negative_prompt = getattr(config, "negative_prompt", "") or ""
+            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
             if realtime:
                 num_inference_steps = min(
@@ -1399,11 +1449,8 @@ def generate_mood_mirror_chunk(
         guidance_scale = 3.0 + config.dream_strength * 4.0
         if realtime:
             guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
-        if realtime and guidance_scale <= 1.0:
-            negative_prompt = ""
-        else:
-            negative_prompt = getattr(config, "negative_prompt", "") or ""
-            negative_prompt = _build_negative_prompt(prompt, negative_prompt)
+        negative_prompt = getattr(config, "negative_prompt", "") or ""
+        negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
             num_inference_steps = min(

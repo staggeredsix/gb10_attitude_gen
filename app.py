@@ -26,6 +26,8 @@ from ltx2_backend import (
     backend_requires_gemma,
     generate_fever_dream_chunk,
     generate_mood_mirror_chunk,
+    get_latest_audio_wav,
+    set_audio_stream_id,
     log_backend_configuration,
     render_status_frame,
     validate_gemma_root,
@@ -244,10 +246,12 @@ class StreamManager:
                     time.sleep(0.005)
                     continue
                 start_time = time.time()
+                set_audio_stream_id(stream_id)
                 if cfg.mode == "fever":
                     frames = generate_fever_dream_chunk(cfg, cancel_event)
                 else:
                     frames = generate_mood_mirror_chunk(cfg, latest_camera_state, cancel_event)
+                set_audio_stream_id(None)
                 stream.last_gen_seconds = max(0.0, time.time() - start_time)
                 stream.last_chunk_playback_seconds = len(frames) / max(1, playback_fps)
                 for frame in frames:
@@ -385,6 +389,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 stream_manager = StreamManager()
 current_config = RunConfig()
+current_streams_count = current_config.streams
 latest_camera_frame: np.ndarray | None = None
 latest_mood: dict[str, Any] | None = None
 latest_camera_lock = threading.Lock()
@@ -448,7 +453,7 @@ def _gemma_status() -> dict[str, Any]:
 def _startup() -> None:
     log_backend_configuration(current_config.output_mode)
     health_status.update(_gemma_status())
-    health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+    health_status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
     health_status["inference_enabled"] = inference_enabled.is_set()
     _start_settings_watcher()
     if not health_status.get("gemma_ok", False):
@@ -464,7 +469,11 @@ def _startup() -> None:
             health_status["errors"][current_config.output_mode] = str(exc)
     else:
         LOGGER.info("Autostart disabled; waiting for POST /api/config.")
+    if health_status["autostart"] and not inference_enabled.is_set():
+        inference_enabled.set()
     stream_manager.restart(current_config, _get_latest_camera_state)
+    global current_streams_count
+    current_streams_count = current_config.streams
 
 
 @app.get("/")
@@ -488,6 +497,8 @@ async def set_config(request: Request) -> RunConfig:
     global current_config
     restart_streams = _should_restart_streams(current_config, config)
     current_config = config
+    global current_streams_count
+    current_streams_count = config.streams
     LOGGER.info("Updated config output_mode=%s", current_config.output_mode)
     if not inference_enabled.is_set():
         inference_enabled.set()
@@ -540,12 +551,12 @@ def healthz(deep: bool = False) -> dict[str, Any]:
         health_status.update(_gemma_status())
         if not health_status.get("gemma_ok", False):
             health_status["errors"]["gemma"] = health_status.get("gemma_reason")
-        health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+        health_status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
         health_status["inference_enabled"] = inference_enabled.is_set()
         return health_status
     status = {"pipeline_loaded": False, "pipelines": {}, "errors": {}}
     status.update(_gemma_status())
-    status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
+    status["autostart"] = _env_bool("LTX2_AUTOSTART", True)
     status["inference_enabled"] = inference_enabled.is_set()
     if not status.get("gemma_ok", False):
         status["errors"]["gemma"] = status.get("gemma_reason")
@@ -598,6 +609,20 @@ def stream(stream_id: int) -> StreamingResponse:
                 time.sleep(sleep_for)
 
     return StreamingResponse(generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
+
+
+@app.get("/audio/status")
+def audio_status(stream: int = 0) -> dict[str, Any]:
+    data, ts = get_latest_audio_wav(stream)
+    return {"available": data is not None, "updated_at": ts}
+
+
+@app.get("/audio/latest.wav")
+def audio_latest(stream: int = 0) -> StreamingResponse:
+    data, _ = get_latest_audio_wav(stream)
+    if not data:
+        raise HTTPException(status_code=404, detail="No audio available")
+    return StreamingResponse(iter([data]), media_type="audio/wav")
 
 
 if __name__ == "__main__":
