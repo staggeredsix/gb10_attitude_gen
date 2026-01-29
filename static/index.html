@@ -101,6 +101,7 @@
         <select id="mode">
           <option value="fever">AI Fever Dream</option>
           <option value="mood">AI Mood Mirror</option>
+          <option value="v2v">Video-to-Video (IC-LoRA)</option>
         </select>
 
         <label for="prompt">Prompt</label>
@@ -109,98 +110,89 @@
         <label for="negativePrompt">Negative prompt</label>
         <textarea id="negativePrompt" placeholder="e.g., people, faces, text, watermark"></textarea>
 
-        <label for="resolution">Resolution</label>
+        <label for="resolution">Generation resolution</label>
         <select id="resolution">
-          <option value="1280x736">1280 × 736 (near 720p)</option>
+          <option value="1280x736">1280 × 736 (native max)</option>
           <option value="1024x576">1024 × 576</option>
           <option value="960x544">960 × 544</option>
           <option value="640x384">640 × 384</option>
-          <option value="custom">Custom</option>
         </select>
 
-        <label for="outputMode">Output mode</label>
-        <select id="outputMode">
-          <option value="native">Native (one-stage output)</option>
-          <option value="upscaled">Upscaled (two-stage refinement)</option>
+        <label for="outputResolution">Output resolution</label>
+        <select id="outputResolution">
+          <option value="none">No upscaling</option>
+          <option value="1920x1088">1920 × 1088 (1080p-ish)</option>
+          <option value="3840x2176">3840 × 2176 (4K-ish)</option>
         </select>
 
-        <label class="inline-toggle">
-          <input id="muteToggle" type="checkbox" />
-          Mute audio (if available)
-        </label>
-
-        <audio id="audioPlayer" controls loop style="width: 100%; margin-top: 8px;"></audio>
-
-        <div class="row">
-          <div>
-            <label for="width">Width</label>
-            <input id="width" type="number" min="256" step="32" />
+        <div id="dreamControls">
+          <div class="row" style="display: none;">
+            <div>
+              <label for="width">Width</label>
+              <input id="width" type="number" min="256" step="32" disabled />
+            </div>
+            <div>
+              <label for="height">Height</label>
+              <input id="height" type="number" min="256" step="32" disabled />
+            </div>
           </div>
-          <div>
-            <label for="height">Height</label>
-            <input id="height" type="number" min="256" step="32" />
+
+          <label for="seed">Seed (optional)</label>
+          <input id="seed" type="number" placeholder="Leave empty for random" />
+
+          <label for="dreamStrength">Dream strength</label>
+          <input id="dreamStrength" type="range" min="0" max="1" step="0.05" />
+
+          <label for="motion">Motion</label>
+          <input id="motion" type="range" min="0" max="1" step="0.05" />
+
+          <div id="moodControls">
+            <label for="basePrompt">Mood Mirror base prompt</label>
+            <textarea id="basePrompt"></textarea>
+
+            <label for="identityStrength">Retain identity → Abstract mirror</label>
+            <input id="identityStrength" type="range" min="0" max="1" step="0.05" />
+
+            <button id="webcamToggle" type="button">Enable webcam</button>
+            <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
           </div>
-        </div>
 
-        <div class="row">
-          <div>
-            <label for="fps">FPS</label>
-            <input id="fps" type="number" min="1" max="60" />
+          <div class="row">
+            <button id="startButton" type="button">Start dreaming</button>
+            <button id="applyButton" type="button">Update dream</button>
+            <button id="stopButton" type="button">Stop dreaming</button>
           </div>
-          <div>
-            <label for="streams">Streams</label>
-            <input id="streams" type="number" min="1" max="16" />
-          </div>
+          <div class="status" id="status"></div>
         </div>
-
-        <label for="seed">Seed (optional)</label>
-        <input id="seed" type="number" placeholder="Leave empty for random" />
-
-        <label for="dreamStrength">Dream strength</label>
-        <input id="dreamStrength" type="range" min="0" max="1" step="0.05" />
-
-        <label for="motion">Motion</label>
-        <input id="motion" type="range" min="0" max="1" step="0.05" />
-
-        <div id="moodControls">
-          <label for="basePrompt">Mood Mirror base prompt</label>
-          <textarea id="basePrompt"></textarea>
-
-          <label for="identityStrength">Retain identity → Abstract mirror</label>
-          <input id="identityStrength" type="range" min="0" max="1" step="0.05" />
-
-          <button id="webcamToggle" type="button">Enable webcam</button>
-          <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
-        </div>
-
-        <div class="row">
-          <button id="startButton" type="button">Start dreaming</button>
-          <button id="applyButton" type="button">Update dream</button>
-        </div>
-        <div class="status" id="status"></div>
       </section>
 
-      <section class="panel">
-        <h3>Streams</h3>
+      <section class="panel" id="streamsPanel">
+        <h3 id="streamsHeading">Streams</h3>
         <div class="grid" id="streamGrid"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="v2vPanel">
         <h3>Video-to-Video (IC-LoRA)</h3>
-        <div class="dropzone" id="v2vDropzone">
-          <strong>Drop a video here</strong> or click to select a file.
-          <input id="v2vFile" type="file" accept="video/*" style="display: none;" />
+        <button id="v2vUpload" type="button">Upload Video</button>
+        <input id="v2vFile" type="file" accept="video/*" style="display: none;" />
+        <div class="status">
+          Uses the main prompt + negative prompt above. Fixed 24 fps. “Stitched” means multiple shorter
+          generations are created and concatenated to reach longer durations.
         </div>
-        <label for="v2vPrompt">V2V Prompt</label>
-        <textarea id="v2vPrompt" placeholder="The main character runs down a street"></textarea>
         <div class="row">
           <div>
-            <label for="v2vStrength">Strength</label>
-            <input id="v2vStrength" type="number" min="0" max="1" step="0.05" value="0.7" />
+            <label for="v2vStrength">Dreaming</label>
+            <input id="v2vStrength" type="range" min="0" max="1" step="0.05" value="0.7" />
           </div>
           <div>
             <label for="v2vSeconds">Seconds</label>
-            <input id="v2vSeconds" type="number" min="1" max="8" step="1" value="4" />
+            <select id="v2vSeconds">
+              <option value="10">10</option>
+              <option value="30">30</option>
+              <option value="60">60</option>
+              <option value="120">120</option>
+              <option value="360">360</option>
+            </select>
           </div>
         </div>
         <button id="v2vSubmit" type="button">Generate Video</button>
@@ -217,40 +209,44 @@
       const promptInput = document.getElementById("prompt");
       const negativePromptInput = document.getElementById("negativePrompt");
       const resolutionSelect = document.getElementById("resolution");
-      const outputModeSelect = document.getElementById("outputMode");
-      const muteToggle = document.getElementById("muteToggle");
-      const audioPlayer = document.getElementById("audioPlayer");
+      const outputResolutionSelect = document.getElementById("outputResolution");
+      const dreamControls = document.getElementById("dreamControls");
       const widthInput = document.getElementById("width");
       const heightInput = document.getElementById("height");
-      const fpsInput = document.getElementById("fps");
-      const streamsInput = document.getElementById("streams");
       const seedInput = document.getElementById("seed");
       const dreamStrengthInput = document.getElementById("dreamStrength");
       const motionInput = document.getElementById("motion");
+      const moodControls = document.getElementById("moodControls");
       const basePromptInput = document.getElementById("basePrompt");
       const identityStrengthInput = document.getElementById("identityStrength");
-      const applyButton = document.getElementById("applyButton");
-      const startButton = document.getElementById("startButton");
-      const status = document.getElementById("status");
-      const streamGrid = document.getElementById("streamGrid");
-      const moodControls = document.getElementById("moodControls");
       const webcamToggle = document.getElementById("webcamToggle");
       const moodValues = document.getElementById("moodValues");
       const webcamVideo = document.getElementById("webcamVideo");
       const webcamCanvas = document.getElementById("webcamCanvas");
       const webcamCtx = webcamCanvas.getContext("2d");
-      const v2vDropzone = document.getElementById("v2vDropzone");
+      const applyButton = document.getElementById("applyButton");
+      const startButton = document.getElementById("startButton");
+      const stopButton = document.getElementById("stopButton");
+      const status = document.getElementById("status");
+      const streamsHeading = document.getElementById("streamsHeading");
+      const streamGrid = document.getElementById("streamGrid");
+      const streamsPanel = document.getElementById("streamsPanel");
+      const v2vPanel = document.getElementById("v2vPanel");
+      const v2vUpload = document.getElementById("v2vUpload");
       const v2vFile = document.getElementById("v2vFile");
-      const v2vPrompt = document.getElementById("v2vPrompt");
       const v2vStrength = document.getElementById("v2vStrength");
       const v2vSeconds = document.getElementById("v2vSeconds");
       const v2vSubmit = document.getElementById("v2vSubmit");
       const v2vStatus = document.getElementById("v2vStatus");
       const v2vPreview = document.getElementById("v2vPreview");
+      const V2V_FPS = 24;
+      const v2vSecondsPresets = [10, 30, 60, 120, 360];
+      const v2vMaxFrames = 257;
+      const v2vTotalMaxFrames = 8640;
+      let cachedConfig = null;
+      let currentStreamsCount = 1;
       let webcamStream = null;
       let webcamInterval = null;
-      let currentStreamsCount = parseInt(streamsInput.value || "1", 10);
-      let lastAudioUpdate = 0;
 
       function setStatus(message) {
         status.textContent = message;
@@ -260,29 +256,111 @@
         v2vStatus.textContent = message;
       }
 
+      function adjustV2vFrames(targetFrames) {
+        const target = Math.max(1, Math.round(targetFrames || 1));
+        const k = Math.round((target - 1) / 8);
+        return Math.max(1, 1 + 8 * k);
+      }
+
+      function updateV2vSecondsOptions() {
+        const fps = V2V_FPS;
+        v2vSeconds.innerHTML = "";
+        let firstEnabled = null;
+        for (const seconds of v2vSecondsPresets) {
+          const targetFrames = seconds * fps;
+          const adjustedFrames = adjustV2vFrames(targetFrames);
+          const actualSeconds = adjustedFrames / fps;
+          const option = document.createElement("option");
+          option.value = String(seconds);
+          option.dataset.frames = String(adjustedFrames);
+          option.dataset.actualSeconds = actualSeconds.toFixed(2);
+          if (adjustedFrames > v2vTotalMaxFrames) {
+            option.disabled = true;
+            option.textContent = `${seconds}s (too long)`;
+          } else if (adjustedFrames > v2vMaxFrames) {
+            option.textContent = `${seconds}s (~${actualSeconds.toFixed(1)}s, stitched)`;
+            if (!firstEnabled) {
+              firstEnabled = option;
+            }
+          } else {
+            option.textContent = `${seconds}s (~${actualSeconds.toFixed(1)}s)`;
+            if (!firstEnabled) {
+              firstEnabled = option;
+            }
+          }
+          v2vSeconds.appendChild(option);
+        }
+        if (firstEnabled) {
+          firstEnabled.selected = true;
+        }
+      }
+
       function updateMoodControls() {
+        v2vPanel.style.display = modeSelect.value === "v2v" ? "block" : "none";
+        const v2vActive = modeSelect.value === "v2v";
+        startButton.disabled = v2vActive;
+        applyButton.disabled = v2vActive;
+        dreamControls.style.display = v2vActive ? "none" : "block";
+        streamsPanel.style.display = v2vActive ? "none" : "block";
+        streamsHeading.textContent = v2vActive ? "Video-to-Video Output" : "Streams";
         moodControls.style.display = modeSelect.value === "mood" ? "block" : "none";
       }
 
+      function resolveOutputSettings() {
+        if (outputResolutionSelect.value === "none") {
+          return {
+            output_mode: "native",
+          };
+        }
+        return {
+          output_mode: "upscaled",
+        };
+      }
+
+      function applyOutputResolutionToMode() {
+        if (outputResolutionSelect.value === "none") {
+          resolutionSelect.disabled = false;
+          const [w, h] = resolutionSelect.value.split("x").map((v) => parseInt(v, 10));
+          if (!Number.isNaN(w) && !Number.isNaN(h)) {
+            widthInput.value = w;
+            heightInput.value = h;
+          }
+          return;
+        }
+        resolutionSelect.disabled = true;
+        const [ow, oh] = outputResolutionSelect.value.split("x").map((v) => parseInt(v, 10));
+        if (!Number.isNaN(ow) && !Number.isNaN(oh)) {
+          widthInput.value = ow;
+          heightInput.value = oh;
+        }
+      }
+
       function buildConfig() {
+        const outputSettings = resolveOutputSettings();
+        const fallback = cachedConfig || {};
         return {
           mode: modeSelect.value,
           prompt: promptInput.value.trim(),
           negative_prompt: negativePromptInput.value.trim(),
           width: parseInt(widthInput.value, 10),
           height: parseInt(heightInput.value, 10),
-          fps: parseInt(fpsInput.value, 10),
-          streams: parseInt(streamsInput.value, 10),
-          output_mode: outputModeSelect.value,
+          fps: fallback.fps ?? 24,
+          streams: fallback.streams ?? 1,
+          output_mode: outputSettings.output_mode,
           seed: seedInput.value ? parseInt(seedInput.value, 10) : null,
           dream_strength: parseFloat(dreamStrengthInput.value),
           motion: parseFloat(motionInput.value),
-          base_prompt: basePromptInput.value.trim(),
-          identity_strength: parseFloat(identityStrengthInput.value),
+          base_prompt: basePromptInput.value.trim() || fallback.base_prompt || "portrait, cinematic lighting",
+          identity_strength: parseFloat(identityStrengthInput.value || String(fallback.identity_strength ?? 0.7)),
+          audio_enabled: false,
         };
       }
 
       async function applyConfig({ start = false } = {}) {
+        if (modeSelect.value === "v2v") {
+          setStatus("V2V uses the panel below. Start/Update are disabled in V2V mode.");
+          return;
+        }
         setStatus(start ? "Starting dream..." : "Updating dream...");
         const config = buildConfig();
         const response = await fetch("/api/config", {
@@ -308,6 +386,8 @@
 
       function buildStreams(count) {
         streamGrid.innerHTML = "";
+        const columns = count <= 1 ? 1 : 2;
+        streamGrid.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
         for (let i = 0; i < count; i++) {
           const wrapper = document.createElement("div");
           wrapper.className = "stream";
@@ -316,16 +396,6 @@
           wrapper.appendChild(img);
           streamGrid.appendChild(wrapper);
         }
-      }
-
-      function applyMuteState() {
-        const muted = !!muteToggle.checked;
-        document.querySelectorAll("video, audio").forEach((el) => {
-          el.muted = muted;
-          if ("volume" in el) {
-            el.volume = muted ? 0.0 : 1.0;
-          }
-        });
       }
 
       function handleV2vFile(file) {
@@ -344,16 +414,24 @@
           setV2vStatus("Please select a video file.");
           return;
         }
-        if (!v2vPrompt.value.trim()) {
+        if (!promptInput.value.trim()) {
           setV2vStatus("Please enter a prompt.");
           return;
         }
-        setV2vStatus("Generating video...");
+        const fps = V2V_FPS;
+        const seconds = parseFloat(v2vSeconds.value || "0");
+        const targetFrames = seconds * fps;
+        const adjustedFrames = adjustV2vFrames(targetFrames);
+        const actualSeconds = adjustedFrames / fps;
+        setV2vStatus(`Generating ~${actualSeconds.toFixed(1)}s (${adjustedFrames} frames @ ${fps} fps)...`);
         const form = new FormData();
         form.append("file", file);
-        form.append("prompt", v2vPrompt.value.trim());
+        form.append("prompt", promptInput.value.trim());
+        form.append("negative_prompt", negativePromptInput.value.trim());
         form.append("strength", String(v2vStrength.value || "0.7"));
-        form.append("seconds", String(v2vSeconds.value || "4"));
+        form.append("seconds", String(seconds || "0"));
+        form.append("num_frames", String(adjustedFrames));
+        form.append("fps", String(fps));
         try {
           const response = await fetch("/api/v2v", { method: "POST", body: form });
           if (!response.ok) {
@@ -371,46 +449,18 @@
         }
       }
 
-      async function loadConfig() {
-        const response = await fetch("/api/config");
-        const config = await response.json();
-        modeSelect.value = config.mode;
-        promptInput.value = config.prompt;
-        negativePromptInput.value = config.negative_prompt || "";
-        widthInput.value = config.width;
-        heightInput.value = config.height;
-        const presetValue = `${config.width}x${config.height}`;
-        const hasPreset = Array.from(resolutionSelect.options).some((opt) => opt.value === presetValue);
-        resolutionSelect.value = hasPreset ? presetValue : "custom";
-        outputModeSelect.value = config.output_mode || "native";
-        fpsInput.value = config.fps;
-        streamsInput.value = config.streams;
-        seedInput.value = config.seed ?? "";
-        dreamStrengthInput.value = config.dream_strength;
-        motionInput.value = config.motion;
-        basePromptInput.value = config.base_prompt;
-        identityStrengthInput.value = config.identity_strength;
-        updateMoodControls();
-        currentStreamsCount = config.streams;
-        buildStreams(config.streams);
-      }
-
-      async function pollAudioStatus() {
+      async function stopInference() {
+        setStatus("Stopping dream...");
         try {
-          const response = await fetch("/audio/status?stream=0");
-          if (!response.ok) return;
-          const status = await response.json();
-          if (!status.available) return;
-          if (status.updated_at && status.updated_at !== lastAudioUpdate) {
-            lastAudioUpdate = status.updated_at;
-            audioPlayer.src = `/audio/latest.wav?stream=0&ts=${Date.now()}`;
-            audioPlayer.currentTime = 0;
-            if (!muteToggle.checked) {
-              audioPlayer.play().catch(() => {});
-            }
+          const response = await fetch("/api/stop", { method: "POST" });
+          if (!response.ok) {
+            const data = await response.json();
+            setStatus(`Error: ${data.detail || "stop failed"}`);
+            return;
           }
-        } catch (_) {
-          return;
+          setStatus("Dream stopped.");
+        } catch (err) {
+          setStatus(`Error: ${err}`);
         }
       }
 
@@ -452,39 +502,54 @@
         }
       }
 
+      async function loadConfig() {
+        const response = await fetch("/api/config");
+        const config = await response.json();
+        cachedConfig = config;
+        modeSelect.value = config.mode;
+        promptInput.value = config.prompt;
+        negativePromptInput.value = config.negative_prompt || "";
+        widthInput.value = config.width;
+        heightInput.value = config.height;
+        const presetValue = `${config.width}x${config.height}`;
+        const hasPreset = Array.from(resolutionSelect.options).some((opt) => opt.value === presetValue);
+        if (config.output_mode === "upscaled") {
+          outputResolutionSelect.value = hasPreset ? presetValue : "3840x2176";
+        } else {
+          outputResolutionSelect.value = "none";
+          resolutionSelect.value = hasPreset ? presetValue : resolutionSelect.options[0]?.value || presetValue;
+        }
+        applyOutputResolutionToMode();
+        seedInput.value = config.seed ?? "";
+        dreamStrengthInput.value = config.dream_strength;
+        motionInput.value = config.motion;
+        basePromptInput.value = config.base_prompt || "portrait, cinematic lighting";
+        identityStrengthInput.value = config.identity_strength ?? 0.7;
+        updateMoodControls();
+        updateV2vSecondsOptions();
+        currentStreamsCount = config.streams;
+        buildStreams(config.streams);
+      }
+
       modeSelect.addEventListener("change", updateMoodControls);
       startButton.addEventListener("click", () => applyConfig({ start: true }));
       applyButton.addEventListener("click", () => applyConfig({ start: false }));
-      muteToggle.addEventListener("change", applyMuteState);
+      stopButton.addEventListener("click", stopInference);
       resolutionSelect.addEventListener("change", () => {
-        if (resolutionSelect.value === "custom") {
-          return;
-        }
         const [w, h] = resolutionSelect.value.split("x").map((v) => parseInt(v, 10));
         if (!Number.isNaN(w) && !Number.isNaN(h)) {
           widthInput.value = w;
           heightInput.value = h;
         }
       });
+      outputResolutionSelect.addEventListener("change", applyOutputResolutionToMode);
       webcamToggle.addEventListener("click", toggleWebcam);
-      v2vDropzone.addEventListener("click", () => v2vFile.click());
-      v2vDropzone.addEventListener("dragover", (event) => {
-        event.preventDefault();
-        v2vDropzone.classList.add("dragover");
-      });
-      v2vDropzone.addEventListener("dragleave", () => v2vDropzone.classList.remove("dragover"));
-      v2vDropzone.addEventListener("drop", (event) => {
-        event.preventDefault();
-        v2vDropzone.classList.remove("dragover");
-        const file = event.dataTransfer.files[0];
-        handleV2vFile(file);
-      });
+      v2vUpload.addEventListener("click", () => v2vFile.click());
       v2vFile.addEventListener("change", () => handleV2vFile(v2vFile.files[0]));
       v2vSubmit.addEventListener("click", submitV2v);
 
       loadConfig();
-      applyMuteState();
-      setInterval(pollAudioStatus, 1500);
+      applyOutputResolutionToMode();
     </script>
   </body>
 </html>

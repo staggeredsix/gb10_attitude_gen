@@ -31,6 +31,7 @@ _GEMMA_TOKENIZER_SHIM_LOGGED = False
 def _shim_gemma_tokenizer_attrs(tokenizer: object) -> None:
     global _GEMMA_TOKENIZER_SHIM_LOGGED
     shimmed: list[str] = []
+    # Compatibility: some tokenizer variants lack Gemma3Processor special token attrs (boi/eoi).
     if not hasattr(tokenizer, "boi_token"):
         bos = getattr(tokenizer, "bos_token", None)
         setattr(tokenizer, "boi_token", bos or "<boi>")
@@ -689,6 +690,7 @@ def generate_v2v_video(
     *,
     input_video_path: str,
     prompt: str,
+    negative_prompt: str,
     width: int,
     height: int,
     fps: int,
@@ -707,7 +709,7 @@ def generate_v2v_video(
     kwargs = _build_pipeline_kwargs(
         pipe,
         prompt=prompt,
-        negative_prompt=_build_negative_prompt(prompt, ""),
+        negative_prompt=_build_negative_prompt(prompt, negative_prompt),
         width=width,
         height=height,
         num_frames=num_frames,

@@ -69,6 +69,18 @@ def _env_fps(name: str, default: int) -> int:
     return max(1, min(value, 60))
 
 
+def _env_int_clamped(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -314,6 +326,40 @@ def _validate_config(config: RunConfig) -> RunConfig:
             status_code=400,
             detail="Upscaled output requires width and height to be multiples of 64.",
         )
+    if config.output_mode == "native":
+        max_native_w = _env_int_clamped("LTX2_NATIVE_MAX_WIDTH", 1280, min_value=64, max_value=8192)
+        max_native_h = _env_int_clamped("LTX2_NATIVE_MAX_HEIGHT", 736, min_value=64, max_value=8192)
+        if config.width > max_native_w or config.height > max_native_h:
+            new_w = min(config.width, max_native_w)
+            new_h = min(config.height, max_native_h)
+            new_w = _round_down_to_multiple(new_w, 32)
+            new_h = _round_down_to_multiple(new_h, 32)
+            LOGGER.warning(
+                "Native resolution capped: %sx%s -> %sx%s (LTX2_NATIVE_MAX_WIDTH/HEIGHT)",
+                config.width,
+                config.height,
+                new_w,
+                new_h,
+            )
+            config.width = new_w
+            config.height = new_h
+    if config.output_mode == "upscaled":
+        max_up_w = _env_int_clamped("LTX2_UPSCALED_MAX_WIDTH", 4096, min_value=64, max_value=16384)
+        max_up_h = _env_int_clamped("LTX2_UPSCALED_MAX_HEIGHT", 2304, min_value=64, max_value=16384)
+        if config.width > max_up_w or config.height > max_up_h:
+            new_w = min(config.width, max_up_w)
+            new_h = min(config.height, max_up_h)
+            new_w = _round_down_to_multiple(new_w, 64)
+            new_h = _round_down_to_multiple(new_h, 64)
+            LOGGER.warning(
+                "Upscaled resolution capped: %sx%s -> %sx%s (LTX2_UPSCALED_MAX_WIDTH/HEIGHT)",
+                config.width,
+                config.height,
+                new_w,
+                new_h,
+            )
+            config.width = new_w
+            config.height = new_h
     config.streams = max(1, min(config.streams, 16))
     if os.getenv("LTX2_BACKEND", "pipelines").strip().lower() == "pipelines" and config.streams > 1:
         LOGGER.warning(
@@ -341,7 +387,29 @@ def _round_down_to_multiple(x: int, m: int) -> int:
     return max(m, (x // m) * m)
 
 
-def _transcode_video(input_path: str, output_path: str, *, width: int, height: int, fps: int) -> None:
+def _adjust_v2v_frames(num_frames: int) -> int:
+    if num_frames < 1:
+        return 1
+    k = int(round((num_frames - 1) / 8))
+    return max(1, 1 + 8 * k)
+
+
+def _round_down_v2v_frames(num_frames: int) -> int:
+    if num_frames < 1:
+        return 1
+    k = (num_frames - 1) // 8
+    return max(1, 1 + 8 * k)
+
+
+def _transcode_video(
+    input_path: str,
+    output_path: str,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int | None = None,
+) -> None:
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise HTTPException(status_code=400, detail="Failed to open uploaded video.")
@@ -352,15 +420,52 @@ def _transcode_video(input_path: str, output_path: str, *, width: int, height: i
     if not writer.isOpened():
         cap.release()
         raise HTTPException(status_code=500, detail="Failed to initialize video writer.")
+    frames_written = 0
+    last_frame = None
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
+            if max_frames is not None and frames_written >= max_frames:
+                break
             resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             writer.write(resized)
+            frames_written += 1
+            last_frame = resized
+        if max_frames is not None and frames_written < max_frames and last_frame is not None:
+            while frames_written < max_frames:
+                writer.write(last_frame)
+                frames_written += 1
     finally:
         cap.release()
+        writer.release()
+
+
+def _concat_videos(video_paths: list[str], output_path: str, *, fps: int, width: int, height: int) -> None:
+    if not video_paths:
+        raise HTTPException(status_code=500, detail="No video chunks to concatenate.")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(output_path, fourcc, float(fps), (width, height))
+    if not writer.isOpened():
+        raise HTTPException(status_code=500, detail="Failed to initialize video writer for concatenation.")
+    try:
+        for path in video_paths:
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                cap.release()
+                raise HTTPException(status_code=500, detail=f"Failed to open chunk: {path}")
+            try:
+                while True:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    if frame.shape[1] != width or frame.shape[0] != height:
+                        frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+                    writer.write(frame)
+            finally:
+                cap.release()
+    finally:
         writer.release()
 
 
@@ -568,10 +673,20 @@ def start_inference() -> dict[str, Any]:
     return {"ok": True, "inference_enabled": inference_enabled.is_set()}
 
 
+@app.post("/api/stop")
+def stop_inference() -> dict[str, Any]:
+    if inference_enabled.is_set():
+        inference_enabled.clear()
+    health_status["inference_enabled"] = inference_enabled.is_set()
+    stream_manager.restart(current_config, _get_latest_camera_state)
+    return {"ok": True, "inference_enabled": inference_enabled.is_set()}
+
+
 @app.post("/api/v2v")
 async def v2v_endpoint(
     file: UploadFile = File(...),
     prompt: str = Form(...),
+    negative_prompt: str = Form(""),
     strength: float = Form(0.7),
     width: int | None = Form(None),
     height: int | None = Form(None),
@@ -595,9 +710,19 @@ async def v2v_endpoint(
         num_frames = int(max(1, float(seconds or 0.0) * f))
     if num_frames < 1:
         raise HTTPException(status_code=400, detail="Invalid num_frames.")
-    if num_frames > 257:
-        LOGGER.info("V2V num_frames capped: %s -> 257", num_frames)
-        num_frames = 257
+    max_frames_env = int(os.getenv("LTX2_V2V_MAX_FRAMES", "257"))
+    total_max_frames_env = int(os.getenv("LTX2_V2V_TOTAL_MAX_FRAMES", "8640"))
+    max_chunk_frames = _round_down_v2v_frames(max_frames_env) if max_frames_env > 0 else None
+    adjusted_frames = _adjust_v2v_frames(num_frames)
+    if total_max_frames_env > 0 and adjusted_frames > total_max_frames_env:
+        max_seconds = total_max_frames_env / float(f or 1)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Requested V2V duration too long. Max ~{max_seconds:.1f}s at {f} fps.",
+        )
+    if adjusted_frames != num_frames:
+        LOGGER.info("V2V num_frames adjusted: %s -> %s", num_frames, adjusted_frames)
+    num_frames = adjusted_frames
     input_path = f"/tmp/v2v_{uuid.uuid4().hex}.mp4"
     resized_path = f"/tmp/v2v_resized_{uuid.uuid4().hex}.mp4"
     output_path = f"/tmp/v2v_out_{uuid.uuid4().hex}.mp4"
@@ -611,23 +736,59 @@ async def v2v_endpoint(
         for path in paths:
             try:
                 os.remove(path)
+            except FileNotFoundError:
+                continue
             except OSError:
                 LOGGER.warning("Failed to remove temp file: %s", path)
 
-    _transcode_video(input_path, resized_path, width=w, height=h, fps=f)
-    generate_v2v_video(
-        input_video_path=resized_path,
-        prompt=prompt,
-        width=w,
-        height=h,
-        fps=f,
-        num_frames=num_frames,
-        seed=seed,
-        strength=float(strength),
-        output_path=output_path,
-    )
+    temp_paths: list[str] = [input_path, resized_path, output_path]
+    if not max_chunk_frames or num_frames <= max_chunk_frames:
+        _transcode_video(input_path, resized_path, width=w, height=h, fps=f, max_frames=num_frames)
+        generate_v2v_video(
+            input_video_path=resized_path,
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            width=w,
+            height=h,
+            fps=f,
+            num_frames=num_frames,
+            seed=seed,
+            strength=float(strength),
+            output_path=output_path,
+        )
+    else:
+        remaining = num_frames
+        chunk_outputs: list[str] = []
+        prev_source = input_path
+        while remaining > 0:
+            chunk_frames = min(max_chunk_frames, remaining)
+            chunk_frames = _round_down_v2v_frames(chunk_frames)
+            if chunk_frames < 1:
+                break
+            cond_path = f"/tmp/v2v_cond_{uuid.uuid4().hex}.mp4"
+            chunk_path = f"/tmp/v2v_chunk_{uuid.uuid4().hex}.mp4"
+            temp_paths.extend([cond_path, chunk_path])
+            _transcode_video(prev_source, cond_path, width=w, height=h, fps=f, max_frames=chunk_frames)
+            generate_v2v_video(
+                input_video_path=cond_path,
+                prompt=prompt,
+                negative_prompt=negative_prompt or "",
+                width=w,
+                height=h,
+                fps=f,
+                num_frames=chunk_frames,
+                seed=seed,
+                strength=float(strength),
+                output_path=chunk_path,
+            )
+            chunk_outputs.append(chunk_path)
+            prev_source = chunk_path
+            remaining -= chunk_frames
+        if not chunk_outputs:
+            raise HTTPException(status_code=500, detail="Failed to generate stitched chunks.")
+        _concat_videos(chunk_outputs, output_path, fps=f, width=w, height=h)
     tasks = BackgroundTasks()
-    tasks.add_task(_cleanup, [input_path, resized_path, output_path])
+    tasks.add_task(_cleanup, temp_paths)
     return FileResponse(output_path, media_type="video/mp4", background=tasks)
 
 
