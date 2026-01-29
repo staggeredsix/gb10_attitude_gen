@@ -22,6 +22,73 @@ from settings_loader import load_settings_conf
 
 load_settings_conf()
 
+os.environ.setdefault("TRANSFORMERS_USE_FAST", "0")
+os.environ.setdefault("HF_USE_FAST_TOKENIZERS", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+_GEMMA_TOKENIZER_SHIM_LOGGED = False
+
+def _shim_gemma_tokenizer_attrs(tokenizer: object) -> None:
+    global _GEMMA_TOKENIZER_SHIM_LOGGED
+    shimmed: list[str] = []
+    if not hasattr(tokenizer, "boi_token"):
+        bos = getattr(tokenizer, "bos_token", None)
+        setattr(tokenizer, "boi_token", bos or "<boi>")
+        shimmed.append("boi_token")
+    if not hasattr(tokenizer, "boi_token_id"):
+        bos_id = getattr(tokenizer, "bos_token_id", None)
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        setattr(tokenizer, "boi_token_id", bos_id if bos_id is not None else eos_id)
+        shimmed.append("boi_token_id")
+    if not hasattr(tokenizer, "eoi_token"):
+        eos = getattr(tokenizer, "eos_token", None)
+        setattr(tokenizer, "eoi_token", eos or "<eoi>")
+        shimmed.append("eoi_token")
+    if not hasattr(tokenizer, "eoi_token_id"):
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        bos_id = getattr(tokenizer, "bos_token_id", None)
+        setattr(tokenizer, "eoi_token_id", eos_id if eos_id is not None else bos_id)
+        shimmed.append("eoi_token_id")
+    if shimmed and not _GEMMA_TOKENIZER_SHIM_LOGGED:
+        LOGGER.info(
+            "Tokenizer shim applied for %s: %s",
+            tokenizer.__class__.__name__,
+            ", ".join(shimmed),
+        )
+        _GEMMA_TOKENIZER_SHIM_LOGGED = True
+
+
+try:
+    from transformers import GemmaTokenizerFast  # type: ignore
+
+    if not hasattr(GemmaTokenizerFast, "image_token_id"):
+        def _image_token_id(self) -> int:  # type: ignore
+            token = getattr(self, "image_token", "<image>")
+            return self.convert_tokens_to_ids(token)
+
+        GemmaTokenizerFast.image_token_id = property(_image_token_id)  # type: ignore
+
+    _orig_init_fast = GemmaTokenizerFast.__init__
+    def _init_fast(self, *args, **kwargs):  # type: ignore
+        _orig_init_fast(self, *args, **kwargs)
+        _shim_gemma_tokenizer_attrs(self)
+
+    GemmaTokenizerFast.__init__ = _init_fast  # type: ignore
+except Exception:
+    pass
+
+try:
+    from transformers import GemmaTokenizer  # type: ignore
+
+    _orig_init = GemmaTokenizer.__init__
+    def _init(self, *args, **kwargs):  # type: ignore
+        _orig_init(self, *args, **kwargs)
+        _shim_gemma_tokenizer_attrs(self)
+
+    GemmaTokenizer.__init__ = _init  # type: ignore
+except Exception:
+    pass
+
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.ic_lora import ICLoraPipeline
 

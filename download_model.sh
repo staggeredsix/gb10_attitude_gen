@@ -196,9 +196,12 @@ local_dir = os.environ["GEMMA_DIR"]
 
 allow_patterns = [
     "config.json",
+    "preprocessor_config.json",
     "generation_config.json",
+    "tokenizer_config.json",
     "tokenizer.*",
     "special_tokens_map.json",
+    "added_tokens.json",
     "*.safetensors",
     "*.bin",
     "*.model",
@@ -212,7 +215,7 @@ snapshot_download(
     allow_patterns=allow_patterns,
 )
 
-required_files = ["config.json"]
+required_files = ["config.json", "preprocessor_config.json", "tokenizer_config.json", "added_tokens.json"]
 missing = [f for f in required_files if not os.path.isfile(os.path.join(local_dir, f))]
 if missing:
     print("Gemma download missing required files:", missing, file=sys.stderr)
