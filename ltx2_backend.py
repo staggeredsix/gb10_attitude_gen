@@ -97,7 +97,9 @@ LOGGER = logging.getLogger("ltx2_backend")
 
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
-_CHAIN_FRAMES: dict[tuple[str, int], Image.Image] = {}
+_CHAIN_FRAMES: dict[tuple[str, int, int], Image.Image] = {}
+_CHAIN_COUNTER: dict[tuple[str, int, int], int] = {}
+_CHAIN_COUNTER_LOCK = threading.Lock()
 _CFG_STATE_LOCK = threading.Lock()
 _CFG_COUNTER: dict[tuple[str, int, int], int] = {}
 _AUDIO_LOCK = threading.Lock()
@@ -1373,20 +1375,30 @@ def generate_fever_dream_frames(config, cancel_event: threading.Event) -> Iterab
             yield frame
 
 
-def _chain_key(mode: str, cancel_event: threading.Event) -> tuple[str, int]:
-    return (mode, id(cancel_event))
+def _chain_key(mode: str, cancel_event: threading.Event, stream_id: int) -> tuple[str, int, int]:
+    return (mode, id(cancel_event), int(stream_id))
 
 
-def _get_chain_frame(mode: str, cancel_event: threading.Event) -> Image.Image | None:
-    return _CHAIN_FRAMES.get(_chain_key(mode, cancel_event))
+def _get_chain_frame(mode: str, cancel_event: threading.Event, stream_id: int) -> Image.Image | None:
+    return _CHAIN_FRAMES.get(_chain_key(mode, cancel_event, stream_id))
 
 
-def _set_chain_frame(mode: str, cancel_event: threading.Event, frame: Image.Image | None) -> None:
-    key = _chain_key(mode, cancel_event)
+def _set_chain_frame(mode: str, cancel_event: threading.Event, frame: Image.Image | None, stream_id: int) -> None:
+    key = _chain_key(mode, cancel_event, stream_id)
     if frame is None:
         _CHAIN_FRAMES.pop(key, None)
     else:
         _CHAIN_FRAMES[key] = frame
+
+
+def _should_reset_chain(mode: str, cancel_event: threading.Event, stream_id: int, reset_interval: int) -> bool:
+    if reset_interval <= 0:
+        return False
+    key = _chain_key(mode, cancel_event, stream_id)
+    with _CHAIN_COUNTER_LOCK:
+        count = _CHAIN_COUNTER.get(key, 0) + 1
+        _CHAIN_COUNTER[key] = count
+    return count % reset_interval == 0
 
 
 def _resolve_chunk_settings(config) -> tuple[int, int, int]:
@@ -1481,6 +1493,7 @@ def _clamp_env_int(name: str, default: int, *, min_value: int, max_value: int) -
 def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
+    stream_id = _current_audio_stream_id()
     quality_lock = bool(getattr(config, "quality_lock", False))
     prompt_drift_enabled = _resolve_prompt_drift(config, quality_lock=quality_lock)
     realtime_cfg = getattr(config, "prompt_strength", None)
@@ -1491,6 +1504,9 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
     else:
         steps_cap = int(steps_cap)
+    reset_interval = _env_int_clamped("LTX2_CHAIN_RESET_INTERVAL", 0, min_value=0, max_value=10000)
+    if _should_reset_chain("fever", cancel_event, stream_id, reset_interval):
+        _set_chain_frame("fever", cancel_event, None, stream_id)
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
@@ -1526,7 +1542,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
                 )
             )
             if frames:
-                _set_chain_frame("fever", cancel_event, frames[-1])
+                _set_chain_frame("fever", cancel_event, frames[-1], stream_id)
             return frames
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Fever Dream diffusers generation error: %s", exc)
@@ -1553,7 +1569,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         )
     try:
         if chain_enabled:
-            carry = _get_chain_frame("fever", cancel_event)
+            carry = _get_chain_frame("fever", cancel_event, stream_id)
             if carry is not None:
                 carry_path = _write_temp_pil(carry)
                 temp_paths.append(carry_path)
@@ -1586,7 +1602,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         if drop_prefix > 0 and len(frames) > drop_prefix:
             frames = frames[drop_prefix:]
         if frames:
-            _set_chain_frame("fever", cancel_event, frames[-1])
+            _set_chain_frame("fever", cancel_event, frames[-1], stream_id)
         return frames
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Fever Dream generation error: %s", exc)
@@ -1615,6 +1631,7 @@ def generate_mood_mirror_chunk(
 ) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
+    stream_id = _current_audio_stream_id()
     quality_lock = bool(getattr(config, "quality_lock", False))
     prompt_drift_enabled = _resolve_prompt_drift(config, quality_lock=quality_lock)
     realtime_cfg = getattr(config, "prompt_strength", None)
@@ -1625,6 +1642,9 @@ def generate_mood_mirror_chunk(
         steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
     else:
         steps_cap = int(steps_cap)
+    reset_interval = _env_int_clamped("LTX2_CHAIN_RESET_INTERVAL", 0, min_value=0, max_value=10000)
+    if _should_reset_chain("mood", cancel_event, stream_id, reset_interval):
+        _set_chain_frame("mood", cancel_event, None, stream_id)
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
@@ -1667,7 +1687,7 @@ def generate_mood_mirror_chunk(
                 )
             )
             if frames:
-                _set_chain_frame("mood", cancel_event, frames[-1])
+                _set_chain_frame("mood", cancel_event, frames[-1], stream_id)
             return frames
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
@@ -1705,7 +1725,7 @@ def generate_mood_mirror_chunk(
         temp_paths.append(image_path)
         images.append((image_path, 0, strength))
         if chain_enabled:
-            carry = _get_chain_frame("mood", cancel_event)
+            carry = _get_chain_frame("mood", cancel_event, stream_id)
             if carry is not None:
                 carry_path = _write_temp_pil(carry)
                 temp_paths.append(carry_path)
@@ -1738,7 +1758,7 @@ def generate_mood_mirror_chunk(
         if drop_prefix > 0 and len(frames) > drop_prefix:
             frames = frames[drop_prefix:]
         if frames:
-            _set_chain_frame("mood", cancel_event, frames[-1])
+            _set_chain_frame("mood", cancel_event, frames[-1], stream_id)
         return frames
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Mood Mirror generation error: %s", exc)
