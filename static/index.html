@@ -96,6 +96,24 @@
         color: #b8c0d8;
         font-size: 0.85rem;
       }
+      .slider-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .slider-value {
+        min-width: 48px;
+        text-align: right;
+        color: #9aa4bf;
+        font-size: 0.8rem;
+      }
+      .settings-item {
+        margin-top: 12px;
+      }
+      .settings-item label {
+        margin-top: 0;
+      }
       input[type="checkbox"] {
         width: auto;
         padding: 0;
@@ -154,16 +172,28 @@
           <label for="seed">Seed (optional)</label>
           <input id="seed" type="number" placeholder="Leave empty for random" />
 
-          <label for="dreamStrength">Dream strength</label>
-          <input id="dreamStrength" type="range" min="0" max="1" step="0.05" />
+          <label class="slider-row" for="dreamStrength">
+            <span>Dream strength</span>
+            <span class="slider-value" id="dreamStrengthValue"></span>
+          </label>
+          <input id="dreamStrength" type="range" min="0" max="1" step="0.01" value="0" />
 
-          <label for="motion">Motion</label>
-          <input id="motion" type="range" min="0" max="1" step="0.05" />
+          <label class="slider-row" for="motion">
+            <span>Motion</span>
+            <span class="slider-value" id="motionValue"></span>
+          </label>
+          <input id="motion" type="range" min="0" max="1" step="0.01" />
 
-          <label for="promptStrength">Prompt Strength</label>
-          <input id="promptStrength" type="range" min="0.8" max="2" step="0.05" value="1" />
+          <label class="slider-row" for="promptStrength">
+            <span>Prompt Strength</span>
+            <span class="slider-value" id="promptStrengthValue"></span>
+          </label>
+          <input id="promptStrength" type="range" min="0.8" max="2" step="0.01" value="1" />
 
-          <label for="qualitySteps">Steps</label>
+          <label class="slider-row" for="qualitySteps">
+            <span>Steps</span>
+            <span class="slider-value" id="qualityStepsValue"></span>
+          </label>
           <input id="qualitySteps" type="range" min="4" max="24" step="1" value="8" />
 
           <label class="toggle-row">
@@ -172,13 +202,22 @@
           </label>
 
           <div id="qualityLockControls" style="display: none;">
-            <label for="qualityLockStrength">Lock Strength</label>
-            <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.05" value="0.35" />
+            <label class="slider-row" for="qualityLockStrength">
+              <span>Lock Strength</span>
+              <span class="slider-value" id="qualityLockStrengthValue"></span>
+            </label>
+            <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.01" value="0.35" />
 
-            <label for="qualityLockFrames">Anchor Frames</label>
+            <label class="slider-row" for="qualityLockFrames">
+              <span>Anchor Frames</span>
+              <span class="slider-value" id="qualityLockFramesValue"></span>
+            </label>
             <input id="qualityLockFrames" type="range" min="1" max="6" step="1" value="3" />
 
-            <label for="dropPrefixFrames">Drop Prefix Frames</label>
+            <label class="slider-row" for="dropPrefixFrames">
+              <span>Drop Prefix Frames</span>
+              <span class="slider-value" id="dropPrefixFramesValue"></span>
+            </label>
             <input id="dropPrefixFrames" type="range" min="0" max="4" step="1" value="0" />
           </div>
 
@@ -191,8 +230,11 @@
             <label for="basePrompt">Mood Mirror base prompt</label>
             <textarea id="basePrompt"></textarea>
 
-            <label for="identityStrength">Retain identity → Abstract mirror</label>
-            <input id="identityStrength" type="range" min="0" max="1" step="0.05" />
+            <label class="slider-row" for="identityStrength">
+              <span>Retain identity → Abstract mirror</span>
+              <span class="slider-value" id="identityStrengthValue"></span>
+            </label>
+            <input id="identityStrength" type="range" min="0" max="1" step="0.01" />
 
             <button id="webcamToggle" type="button">Enable webcam</button>
             <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
@@ -204,6 +246,16 @@
             <button id="stopButton" type="button">Stop dreaming</button>
           </div>
           <div class="status" id="status"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="settingsPanel">
+        <h3>Runtime Settings (settings.conf)</h3>
+        <div class="status" id="settingsStatus"></div>
+        <div id="settingsList"></div>
+        <div class="row" style="margin-top: 12px;">
+          <button id="settingsApply" type="button">Apply settings</button>
+          <button id="settingsReset" type="button">Reset defaults</button>
         </div>
       </section>
 
@@ -223,7 +275,7 @@
         <div class="row">
           <div>
             <label for="v2vStrength">Dreaming</label>
-            <input id="v2vStrength" type="range" min="0" max="1" step="0.05" value="0.7" />
+          <input id="v2vStrength" type="range" min="0" max="1" step="0.01" value="0.7" />
           </div>
           <div>
             <label for="v2vSeconds">Seconds</label>
@@ -265,6 +317,14 @@
       const qualityLockFramesInput = document.getElementById("qualityLockFrames");
       const dropPrefixFramesInput = document.getElementById("dropPrefixFrames");
       const promptDriftToggle = document.getElementById("promptDrift");
+      const dreamStrengthValue = document.getElementById("dreamStrengthValue");
+      const motionValue = document.getElementById("motionValue");
+      const promptStrengthValue = document.getElementById("promptStrengthValue");
+      const qualityStepsValue = document.getElementById("qualityStepsValue");
+      const qualityLockStrengthValue = document.getElementById("qualityLockStrengthValue");
+      const qualityLockFramesValue = document.getElementById("qualityLockFramesValue");
+      const dropPrefixFramesValue = document.getElementById("dropPrefixFramesValue");
+      const identityStrengthValue = document.getElementById("identityStrengthValue");
       const moodControls = document.getElementById("moodControls");
       const basePromptInput = document.getElementById("basePrompt");
       const identityStrengthInput = document.getElementById("identityStrength");
@@ -281,6 +341,11 @@
       const streamGrid = document.getElementById("streamGrid");
       const streamsPanel = document.getElementById("streamsPanel");
       const v2vPanel = document.getElementById("v2vPanel");
+      const settingsPanel = document.getElementById("settingsPanel");
+      const settingsList = document.getElementById("settingsList");
+      const settingsStatus = document.getElementById("settingsStatus");
+      const settingsApply = document.getElementById("settingsApply");
+      const settingsReset = document.getElementById("settingsReset");
       const v2vUpload = document.getElementById("v2vUpload");
       const v2vFile = document.getElementById("v2vFile");
       const v2vStrength = document.getElementById("v2vStrength");
@@ -299,6 +364,10 @@
 
       function setStatus(message) {
         status.textContent = message;
+      }
+
+      function setSettingsStatus(message) {
+        settingsStatus.textContent = message;
       }
 
       function setV2vStatus(message) {
@@ -363,6 +432,164 @@
           promptDriftToggle.disabled = true;
         } else {
           promptDriftToggle.disabled = false;
+        }
+      }
+
+      function updateSliderValues() {
+        dreamStrengthValue.textContent = Number(dreamStrengthInput.value || 0).toFixed(2);
+        motionValue.textContent = Number(motionInput.value || 0).toFixed(2);
+        promptStrengthValue.textContent = Number(promptStrengthInput.value || 0).toFixed(2);
+        qualityStepsValue.textContent = String(parseInt(qualityStepsInput.value || "0", 10));
+        qualityLockStrengthValue.textContent = Number(qualityLockStrengthInput.value || 0).toFixed(2);
+        qualityLockFramesValue.textContent = String(parseInt(qualityLockFramesInput.value || "0", 10));
+        dropPrefixFramesValue.textContent = String(parseInt(dropPrefixFramesInput.value || "0", 10));
+        identityStrengthValue.textContent = Number(identityStrengthInput.value || 0).toFixed(2);
+      }
+
+      function inferSettingRange(key, value) {
+        const upper = key.toUpperCase();
+        const numeric = Number(value);
+        const isNumeric = !Number.isNaN(numeric);
+        const boolHints = ["ENABLE", "DISABLE", "SKIP", "PERSIST", "USE_", "AUTOSTART", "CHAINING", "DROP_", "PROMPT_DRIFT"];
+        if (boolHints.some((hint) => upper.includes(hint)) && (value === "0" || value === "1")) {
+          return { min: 0, max: 1, step: 1, value: Number(value) };
+        }
+        if (!isNumeric) {
+          return { min: 0, max: 1, step: 1, value: 0 };
+        }
+        if (upper.includes("WIDTH") || upper.includes("HEIGHT")) {
+          return { min: 64, max: 8192, step: 32, value: numeric };
+        }
+        if (upper.includes("FPS")) {
+          return { min: 1, max: 60, step: 1, value: numeric };
+        }
+        if (upper.includes("SECONDS")) {
+          const max = Math.max(10, Math.ceil(numeric * 2));
+          return { min: 0, max, step: 0.1, value: numeric };
+        }
+        if (upper.includes("FRAMES")) {
+          const max = Math.max(16, Math.ceil(numeric * 2));
+          return { min: 0, max, step: 1, value: numeric };
+        }
+        if (upper.includes("STEPS")) {
+          return { min: 0, max: 200, step: 1, value: numeric };
+        }
+        if (upper.includes("CFG")) {
+          return { min: 0, max: 2, step: 0.01, value: numeric };
+        }
+        if (upper.includes("STRENGTH")) {
+          const max = numeric > 1 ? 2 : 1;
+          return { min: 0, max, step: 0.01, value: numeric };
+        }
+        if (Number.isInteger(numeric)) {
+          const max = Math.max(10, Math.ceil(numeric * 2));
+          return { min: 0, max, step: 1, value: numeric };
+        }
+        const max = Math.max(1, Math.ceil(numeric * 2));
+        return { min: 0, max, step: 0.01, value: numeric };
+      }
+
+      function formatSettingValue(slider) {
+        const step = parseFloat(slider.step || "1");
+        if (step >= 1) {
+          return String(parseInt(slider.value || "0", 10));
+        }
+        return Number(slider.value || 0).toFixed(2);
+      }
+
+      function buildSettingsList(items) {
+        settingsList.innerHTML = "";
+        items.forEach((item) => {
+          const wrapper = document.createElement("div");
+          wrapper.className = "settings-item";
+          const range = inferSettingRange(item.key, item.value === "" ? "0" : item.value);
+          const label = document.createElement("label");
+          label.className = "slider-row";
+          label.htmlFor = `setting-${item.key}`;
+          const labelText = document.createElement("span");
+          labelText.textContent = item.key;
+          const valueText = document.createElement("span");
+          valueText.className = "slider-value";
+          label.appendChild(labelText);
+          label.appendChild(valueText);
+          const slider = document.createElement("input");
+          slider.type = "range";
+          slider.id = `setting-${item.key}`;
+          slider.dataset.key = item.key;
+          slider.dataset.emptyAllowed = item.empty_allowed ? "1" : "0";
+          slider.min = String(range.min);
+          slider.max = String(range.max);
+          slider.step = String(range.step);
+          slider.value = String(range.value);
+          valueText.textContent = formatSettingValue(slider);
+          slider.addEventListener("input", () => {
+            valueText.textContent = formatSettingValue(slider);
+          });
+          wrapper.appendChild(label);
+          wrapper.appendChild(slider);
+          settingsList.appendChild(wrapper);
+        });
+      }
+
+      async function loadSettings() {
+        try {
+          const response = await fetch("/api/settings");
+          if (!response.ok) {
+            setSettingsStatus("Failed to load settings.");
+            return;
+          }
+          const data = await response.json();
+          buildSettingsList(data.settings || []);
+          setSettingsStatus("");
+        } catch (err) {
+          setSettingsStatus(`Error: ${err}`);
+        }
+      }
+
+      async function applySettings() {
+        const updates = {};
+        const sliders = settingsList.querySelectorAll("input[type='range']");
+        sliders.forEach((slider) => {
+          const key = slider.dataset.key;
+          if (!key) return;
+          const emptyAllowed = slider.dataset.emptyAllowed === "1";
+          if (emptyAllowed && Number(slider.value) === 0) {
+            updates[key] = "";
+            return;
+          }
+          updates[key] = slider.value;
+        });
+        setSettingsStatus("Applying settings...");
+        try {
+          const response = await fetch("/api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ settings: updates }),
+          });
+          if (!response.ok) {
+            const data = await response.json();
+            setSettingsStatus(`Error: ${data.detail || "update failed"}`);
+            return;
+          }
+          setSettingsStatus("Settings applied.");
+        } catch (err) {
+          setSettingsStatus(`Error: ${err}`);
+        }
+      }
+
+      async function resetSettings() {
+        setSettingsStatus("Resetting defaults...");
+        try {
+          const response = await fetch("/api/settings/reset", { method: "POST" });
+          if (!response.ok) {
+            const data = await response.json();
+            setSettingsStatus(`Error: ${data.detail || "reset failed"}`);
+            return;
+          }
+          await loadSettings();
+          setSettingsStatus("Defaults restored.");
+        } catch (err) {
+          setSettingsStatus(`Error: ${err}`);
         }
       }
 
@@ -599,6 +826,7 @@
         promptDriftToggle.checked = Boolean(config.prompt_drift);
         basePromptInput.value = config.base_prompt || "portrait, cinematic lighting";
         identityStrengthInput.value = config.identity_strength ?? 0.7;
+        updateSliderValues();
         updateQualityControls();
         updateMoodControls();
         updateV2vSecondsOptions();
@@ -610,6 +838,14 @@
       startButton.addEventListener("click", () => applyConfig({ start: true }));
       applyButton.addEventListener("click", () => applyConfig({ start: false }));
       stopButton.addEventListener("click", stopInference);
+      dreamStrengthInput.addEventListener("input", updateSliderValues);
+      motionInput.addEventListener("input", updateSliderValues);
+      promptStrengthInput.addEventListener("input", updateSliderValues);
+      qualityStepsInput.addEventListener("input", updateSliderValues);
+      qualityLockStrengthInput.addEventListener("input", updateSliderValues);
+      qualityLockFramesInput.addEventListener("input", updateSliderValues);
+      dropPrefixFramesInput.addEventListener("input", updateSliderValues);
+      identityStrengthInput.addEventListener("input", updateSliderValues);
       resolutionSelect.addEventListener("change", () => {
         const [w, h] = resolutionSelect.value.split("x").map((v) => parseInt(v, 10));
         if (!Number.isNaN(w) && !Number.isNaN(h)) {
@@ -623,9 +859,13 @@
       v2vUpload.addEventListener("click", () => v2vFile.click());
       v2vFile.addEventListener("change", () => handleV2vFile(v2vFile.files[0]));
       v2vSubmit.addEventListener("click", submitV2v);
+      settingsApply.addEventListener("click", applySettings);
+      settingsReset.addEventListener("click", resetSettings);
 
       loadConfig();
+      loadSettings();
       applyOutputResolutionToMode();
+      updateSliderValues();
     </script>
   </body>
 </html>

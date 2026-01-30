@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import queue
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
+
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -166,7 +169,7 @@ class RunConfig(BaseModel):
     fps: int = DEFAULT_FPS
     streams: int = DEFAULT_STREAMS
     seed: int | None = None
-    dream_strength: float = 0.7
+    dream_strength: float = 0.0
     motion: float = 0.6
     prompt_strength: float = 1.0
     quality_steps: int = 8
@@ -178,6 +181,10 @@ class RunConfig(BaseModel):
     base_prompt: str = Field("portrait, cinematic lighting", min_length=1)
     identity_strength: float = 0.7
     output_mode: Literal["native", "upscaled"] = DEFAULT_OUTPUT_MODE
+
+
+class SettingsUpdate(BaseModel):
+    settings: dict[str, float | int | str | None]
 
 
 @dataclass
@@ -558,6 +565,90 @@ def _settings_path() -> str:
     return os.path.join(os.path.dirname(__file__), "settings.conf")
 
 
+def _settings_defaults_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "settings.defaults.conf")
+
+
+def _ensure_settings_defaults() -> None:
+    defaults_path = _settings_defaults_path()
+    if os.path.exists(defaults_path):
+        return
+    settings_path = _settings_path()
+    if not os.path.exists(settings_path):
+        return
+    try:
+        shutil.copyfile(settings_path, defaults_path)
+    except OSError:
+        LOGGER.exception("Failed to snapshot settings defaults")
+
+
+def _parse_settings_lines(lines: list[str]) -> tuple[dict[str, str], dict[str, int], int | None]:
+    settings: dict[str, str] = {}
+    locations: dict[str, int] = {}
+    current_section: str | None = None
+    inference_section_idx: int | None = None
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current_section = line[1:-1].strip().lower() or None
+            if current_section == "inference":
+                inference_section_idx = idx
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        if current_section == "inference" and key.lower() == "steps":
+            settings["inference.steps"] = value
+            locations["inference.steps"] = idx
+            continue
+        if current_section is None:
+            settings[key] = value
+            locations[key] = idx
+    return settings, locations, inference_section_idx
+
+
+def _apply_settings_updates(updates: dict[str, str]) -> None:
+    settings_path = _settings_path()
+    lines = []
+    if os.path.exists(settings_path):
+        lines = Path(settings_path).read_text(encoding="utf-8").splitlines()
+    settings, locations, inference_section_idx = _parse_settings_lines(lines)
+    updated_lines = list(lines)
+    pending_new: list[str] = []
+    pending_inference: list[str] = []
+    for key, value in updates.items():
+        value_text = "" if value is None else str(value)
+        if key == "inference.steps":
+            if key in locations:
+                updated_lines[locations[key]] = f"steps={value_text}"
+            else:
+                pending_inference.append(f"steps={value_text}")
+            continue
+        if key in locations:
+            updated_lines[locations[key]] = f"{key}={value_text}"
+        else:
+            pending_new.append(f"{key}={value_text}")
+    if pending_inference:
+        if inference_section_idx is None:
+            updated_lines.extend(["", "[inference]"])
+            updated_lines.extend(pending_inference)
+        else:
+            insert_at = inference_section_idx + 1
+            for line in pending_inference:
+                updated_lines.insert(insert_at, line)
+                insert_at += 1
+    if pending_new:
+        if updated_lines and updated_lines[-1].strip():
+            updated_lines.append("")
+        updated_lines.extend(pending_new)
+    Path(settings_path).write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+
 def _start_settings_watcher() -> None:
     def _watch() -> None:
         global _settings_mtime
@@ -608,6 +699,7 @@ def _gemma_status() -> dict[str, Any]:
 @app.on_event("startup")
 def _startup() -> None:
     log_backend_configuration(current_config.output_mode)
+    _ensure_settings_defaults()
     health_status.update(_gemma_status())
     health_status["autostart"] = _env_bool("LTX2_AUTOSTART", False)
     health_status["inference_enabled"] = inference_enabled.is_set()
@@ -638,6 +730,49 @@ def index() -> FileResponse:
 @app.get("/api/config")
 def get_config() -> RunConfig:
     return current_config
+
+
+@app.get("/api/settings")
+def get_settings() -> dict[str, Any]:
+    settings_path = _settings_path()
+    if not os.path.exists(settings_path):
+        return {"settings": []}
+    lines = Path(settings_path).read_text(encoding="utf-8").splitlines()
+    settings, _, _ = _parse_settings_lines(lines)
+    items = []
+    for key in sorted(settings.keys()):
+        value = settings[key]
+        items.append({"key": key, "value": value, "empty_allowed": value == ""})
+    return {"settings": items}
+
+
+@app.post("/api/settings")
+def set_settings(payload: SettingsUpdate) -> dict[str, Any]:
+    updates: dict[str, str] = {}
+    for key, value in payload.settings.items():
+        if value is None:
+            updates[key] = ""
+        else:
+            updates[key] = str(value)
+    _apply_settings_updates(updates)
+    load_settings_conf(override=True)
+    if inference_enabled.is_set():
+        stream_manager.restart(current_config, _get_latest_camera_state)
+    return {"ok": True}
+
+
+@app.post("/api/settings/reset")
+def reset_settings() -> dict[str, Any]:
+    _ensure_settings_defaults()
+    defaults_path = _settings_defaults_path()
+    settings_path = _settings_path()
+    if not os.path.exists(defaults_path):
+        raise HTTPException(status_code=500, detail="Defaults snapshot missing.")
+    shutil.copyfile(defaults_path, settings_path)
+    load_settings_conf(override=True)
+    if inference_enabled.is_set():
+        stream_manager.restart(current_config, _get_latest_camera_state)
+    return {"ok": True}
 
 
 @app.post("/api/config")
