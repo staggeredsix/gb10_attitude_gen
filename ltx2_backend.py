@@ -98,6 +98,8 @@ LOGGER = logging.getLogger("ltx2_backend")
 _PIPELINES: dict[str, object] = {}
 _PIPELINE_LOCK = threading.Lock()
 _CHAIN_FRAMES: dict[tuple[str, int], Image.Image] = {}
+_CFG_STATE_LOCK = threading.Lock()
+_CFG_COUNTER: dict[tuple[str, int, int], int] = {}
 _AUDIO_LOCK = threading.Lock()
 _LATEST_AUDIO_BY_STREAM: dict[int, tuple[bytes, float]] = {}
 _AUDIO_STREAM_LOCAL = threading.local()
@@ -1414,6 +1416,22 @@ def _resolve_chunk_settings(config) -> tuple[int, int, int]:
     return stage_width, stage_height, num_frames
 
 
+def _adaptive_cfg(mode: str, cancel_event: threading.Event, stream_id: int | None) -> float:
+    base_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
+    boost_cfg = _env_float("LTX2_CFG_BOOST", base_cfg)
+    every = _env_int_clamped("LTX2_CFG_BOOST_EVERY", 0, min_value=0, max_value=1000)
+    if every <= 0 or boost_cfg <= base_cfg:
+        return base_cfg
+    sid = stream_id or 0
+    key = (mode, id(cancel_event), sid)
+    with _CFG_STATE_LOCK:
+        count = _CFG_COUNTER.get(key, 0) + 1
+        _CFG_COUNTER[key] = count
+    if count % every == 0:
+        return boost_cfg
+    return base_cfg
+
+
 def _clamp_env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
     value = os.getenv(name)
     if value is None:
@@ -1442,7 +1460,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
             guidance_scale = 3.0 + config.dream_strength * 5.0
             if realtime:
-                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+                guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
@@ -1505,7 +1523,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 5.0
         if realtime:
-            guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+            guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
@@ -1582,7 +1600,7 @@ def generate_mood_mirror_chunk(
             realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
             guidance_scale = 3.0 + config.dream_strength * 4.0
             if realtime:
-                guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+                guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
@@ -1656,7 +1674,7 @@ def generate_mood_mirror_chunk(
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 4.0
         if realtime:
-            guidance_scale = _env_float("LTX2_REALTIME_CFG", 1.0)
+            guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
