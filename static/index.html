@@ -88,6 +88,20 @@
         font-size: 0.85rem;
         margin-top: 6px;
       }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 12px;
+        color: #b8c0d8;
+        font-size: 0.85rem;
+      }
+      input[type="checkbox"] {
+        width: auto;
+        padding: 0;
+        background: transparent;
+        border: none;
+      }
     </style>
   </head>
   <body>
@@ -145,6 +159,33 @@
 
           <label for="motion">Motion</label>
           <input id="motion" type="range" min="0" max="1" step="0.05" />
+
+          <label for="promptStrength">Prompt Strength</label>
+          <input id="promptStrength" type="range" min="0.8" max="2" step="0.05" value="1" />
+
+          <label for="qualitySteps">Steps</label>
+          <input id="qualitySteps" type="range" min="4" max="24" step="1" value="8" />
+
+          <label class="toggle-row">
+            <input id="qualityLock" type="checkbox" />
+            Quality Lock
+          </label>
+
+          <div id="qualityLockControls" style="display: none;">
+            <label for="qualityLockStrength">Lock Strength</label>
+            <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.05" value="0.35" />
+
+            <label for="qualityLockFrames">Anchor Frames</label>
+            <input id="qualityLockFrames" type="range" min="1" max="6" step="1" value="3" />
+
+            <label for="dropPrefixFrames">Drop Prefix Frames</label>
+            <input id="dropPrefixFrames" type="range" min="0" max="4" step="1" value="0" />
+          </div>
+
+          <label class="toggle-row">
+            <input id="promptDrift" type="checkbox" />
+            Prompt Drift
+          </label>
 
           <div id="moodControls">
             <label for="basePrompt">Mood Mirror base prompt</label>
@@ -216,6 +257,14 @@
       const seedInput = document.getElementById("seed");
       const dreamStrengthInput = document.getElementById("dreamStrength");
       const motionInput = document.getElementById("motion");
+      const promptStrengthInput = document.getElementById("promptStrength");
+      const qualityStepsInput = document.getElementById("qualitySteps");
+      const qualityLockToggle = document.getElementById("qualityLock");
+      const qualityLockControls = document.getElementById("qualityLockControls");
+      const qualityLockStrengthInput = document.getElementById("qualityLockStrength");
+      const qualityLockFramesInput = document.getElementById("qualityLockFrames");
+      const dropPrefixFramesInput = document.getElementById("dropPrefixFrames");
+      const promptDriftToggle = document.getElementById("promptDrift");
       const moodControls = document.getElementById("moodControls");
       const basePromptInput = document.getElementById("basePrompt");
       const identityStrengthInput = document.getElementById("identityStrength");
@@ -306,6 +355,17 @@
         moodControls.style.display = modeSelect.value === "mood" ? "block" : "none";
       }
 
+      function updateQualityControls() {
+        const enabled = qualityLockToggle.checked;
+        qualityLockControls.style.display = enabled ? "block" : "none";
+        if (enabled) {
+          promptDriftToggle.checked = false;
+          promptDriftToggle.disabled = true;
+        } else {
+          promptDriftToggle.disabled = false;
+        }
+      }
+
       function resolveOutputSettings() {
         if (outputResolutionSelect.value === "none") {
           return {
@@ -350,6 +410,13 @@
           seed: seedInput.value ? parseInt(seedInput.value, 10) : null,
           dream_strength: parseFloat(dreamStrengthInput.value),
           motion: parseFloat(motionInput.value),
+          prompt_strength: parseFloat(promptStrengthInput.value),
+          quality_steps: parseInt(qualityStepsInput.value, 10),
+          quality_lock: qualityLockToggle.checked,
+          quality_lock_strength: parseFloat(qualityLockStrengthInput.value),
+          quality_lock_frames: parseInt(qualityLockFramesInput.value, 10),
+          drop_prefix_frames: parseInt(dropPrefixFramesInput.value, 10),
+          prompt_drift: promptDriftToggle.checked,
           base_prompt: basePromptInput.value.trim() || fallback.base_prompt || "portrait, cinematic lighting",
           identity_strength: parseFloat(identityStrengthInput.value || String(fallback.identity_strength ?? 0.7)),
           audio_enabled: false,
@@ -523,8 +590,16 @@
         seedInput.value = config.seed ?? "";
         dreamStrengthInput.value = config.dream_strength;
         motionInput.value = config.motion;
+        promptStrengthInput.value = config.prompt_strength ?? 1.0;
+        qualityStepsInput.value = config.quality_steps ?? 8;
+        qualityLockToggle.checked = Boolean(config.quality_lock);
+        qualityLockStrengthInput.value = config.quality_lock_strength ?? 0.35;
+        qualityLockFramesInput.value = config.quality_lock_frames ?? 3;
+        dropPrefixFramesInput.value = config.drop_prefix_frames ?? 0;
+        promptDriftToggle.checked = Boolean(config.prompt_drift);
         basePromptInput.value = config.base_prompt || "portrait, cinematic lighting";
         identityStrengthInput.value = config.identity_strength ?? 0.7;
+        updateQualityControls();
         updateMoodControls();
         updateV2vSecondsOptions();
         currentStreamsCount = config.streams;
@@ -543,6 +618,7 @@
         }
       });
       outputResolutionSelect.addEventListener("change", applyOutputResolutionToMode);
+      qualityLockToggle.addEventListener("change", updateQualityControls);
       webcamToggle.addEventListener("click", toggleWebcam);
       v2vUpload.addEventListener("click", () => v2vFile.click());
       v2vFile.addEventListener("change", () => handleV2vFile(v2vFile.files[0]));

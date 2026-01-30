@@ -783,8 +783,10 @@ def _prompt_drift(prompt: str) -> str:
     return f"{prompt}, {', '.join(drift)}"
 
 
-def _maybe_prompt_drift(prompt: str) -> str:
-    if os.getenv("LTX2_PROMPT_DRIFT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+def _maybe_prompt_drift(prompt: str, allow_drift: bool | None = None) -> str:
+    if allow_drift is None:
+        allow_drift = os.getenv("LTX2_PROMPT_DRIFT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if allow_drift:
         return _prompt_drift(prompt)
     return prompt
 
@@ -1416,12 +1418,18 @@ def _resolve_chunk_settings(config) -> tuple[int, int, int]:
     return stage_width, stage_height, num_frames
 
 
-def _adaptive_cfg(mode: str, cancel_event: threading.Event, stream_id: int | None) -> float:
-    base_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
-    boost_cfg = _env_float("LTX2_CFG_BOOST", base_cfg)
+def _adaptive_cfg(
+    mode: str,
+    cancel_event: threading.Event,
+    stream_id: int | None,
+    *,
+    base_cfg: float | None = None,
+) -> float:
+    resolved_base_cfg = base_cfg if base_cfg is not None else _env_float("LTX2_REALTIME_CFG", 1.0)
+    boost_cfg = _env_float("LTX2_CFG_BOOST", resolved_base_cfg)
     every = _env_int_clamped("LTX2_CFG_BOOST_EVERY", 0, min_value=0, max_value=1000)
-    if every <= 0 or boost_cfg <= base_cfg:
-        return base_cfg
+    if every <= 0 or boost_cfg <= resolved_base_cfg:
+        return resolved_base_cfg
     sid = stream_id or 0
     key = (mode, id(cancel_event), sid)
     with _CFG_STATE_LOCK:
@@ -1429,7 +1437,33 @@ def _adaptive_cfg(mode: str, cancel_event: threading.Event, stream_id: int | Non
         _CFG_COUNTER[key] = count
     if count % every == 0:
         return boost_cfg
-    return base_cfg
+    return resolved_base_cfg
+
+
+def _resolve_prompt_drift(config, *, quality_lock: bool) -> bool:
+    if quality_lock:
+        return False
+    if hasattr(config, "prompt_drift"):
+        return bool(getattr(config, "prompt_drift"))
+    return _env_bool("LTX2_PROMPT_DRIFT", False)
+
+
+def _resolve_chain_settings(config) -> tuple[bool, float, int, int]:
+    chain_enabled = _env_bool("LTX2_CHAINING", True)
+    chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+    chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
+    drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+    if hasattr(config, "quality_lock"):
+        quality_lock = bool(getattr(config, "quality_lock"))
+        if quality_lock:
+            chain_enabled = True
+            chain_strength = float(getattr(config, "quality_lock_strength", chain_strength))
+            chain_frames = int(getattr(config, "quality_lock_frames", chain_frames))
+            drop_prefix = int(getattr(config, "drop_prefix_frames", drop_prefix))
+        else:
+            chain_enabled = False
+            drop_prefix = 0
+    return chain_enabled, chain_strength, chain_frames, drop_prefix
 
 
 def _clamp_env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -1447,12 +1481,22 @@ def _clamp_env_int(name: str, default: int, *, min_value: int, max_value: int) -
 def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
+    quality_lock = bool(getattr(config, "quality_lock", False))
+    prompt_drift_enabled = _resolve_prompt_drift(config, quality_lock=quality_lock)
+    realtime_cfg = getattr(config, "prompt_strength", None)
+    if realtime_cfg is None:
+        realtime_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
+    steps_cap = getattr(config, "quality_steps", None)
+    if steps_cap is None:
+        steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
+    else:
+        steps_cap = int(steps_cap)
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
             return [render_status_frame("Diffusers backend unavailable", config.width, config.height)]
         stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
-        prompt = _maybe_prompt_drift(config.prompt)
+        prompt = _maybe_prompt_drift(config.prompt, allow_drift=prompt_drift_enabled)
         seed = None
         if config.seed is not None:
             seed = config.seed + int(time.time())
@@ -1460,15 +1504,12 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
             guidance_scale = 3.0 + config.dream_strength * 5.0
             if realtime:
-                guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id)
+                guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id, base_cfg=realtime_cfg)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
             if realtime:
-                num_inference_steps = min(
-                    num_inference_steps,
-                    _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
-                )
+                num_inference_steps = min(num_inference_steps, steps_cap)
             frames = list(
                 _generate_diffusers_chunk(
                     pipe,
@@ -1495,16 +1536,13 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
     if pipe is None:
         return [render_status_frame("LTX-2 load failed", config.width, config.height)]
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
-    prompt = _maybe_prompt_drift(config.prompt)
+    prompt = _maybe_prompt_drift(config.prompt, allow_drift=prompt_drift_enabled)
     seed = None
     if config.seed is not None:
         seed = config.seed + int(time.time())
     images: list[tuple[str, int, float]] | None = None
     temp_paths: list[str] = []
-    chain_enabled = _env_bool("LTX2_CHAINING", True)
-    chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
-    chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
-    drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+    chain_enabled, chain_strength, chain_frames, drop_prefix = _resolve_chain_settings(config)
     if os.getenv("LTX2_LOG_CHAINING") == "1":
         LOGGER.info(
             "Chaining: enabled=%s strength=%.3f frames=%s drop_prefix=%s",
@@ -1523,15 +1561,12 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 5.0
         if realtime:
-            guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id)
+            guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id, base_cfg=realtime_cfg)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
-            num_inference_steps = min(
-                num_inference_steps,
-                _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
-            )
+            num_inference_steps = min(num_inference_steps, steps_cap)
         frames = list(
             _generate_video_chunk(
                 pipe,
@@ -1580,6 +1615,16 @@ def generate_mood_mirror_chunk(
 ) -> list[Image.Image]:
     backend = _get_backend()
     output_mode = getattr(config, "output_mode", "native")
+    quality_lock = bool(getattr(config, "quality_lock", False))
+    prompt_drift_enabled = _resolve_prompt_drift(config, quality_lock=quality_lock)
+    realtime_cfg = getattr(config, "prompt_strength", None)
+    if realtime_cfg is None:
+        realtime_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
+    steps_cap = getattr(config, "quality_steps", None)
+    if steps_cap is None:
+        steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
+    else:
+        steps_cap = int(steps_cap)
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
@@ -1592,7 +1637,7 @@ def generate_mood_mirror_chunk(
         if mood_state:
             mood_prompt = mood_state.get("prompt_hint") or ""
             prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-        prompt = _maybe_prompt_drift(prompt)
+        prompt = _maybe_prompt_drift(prompt, allow_drift=prompt_drift_enabled)
         seed = None
         if config.seed is not None:
             seed = config.seed + int(time.time())
@@ -1600,15 +1645,12 @@ def generate_mood_mirror_chunk(
             realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
             guidance_scale = 3.0 + config.dream_strength * 4.0
             if realtime:
-                guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id)
+                guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id, base_cfg=realtime_cfg)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
             num_inference_steps = int(10 + config.motion * 10)
             if realtime:
-                num_inference_steps = min(
-                    num_inference_steps,
-                    _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
-                )
+                num_inference_steps = min(num_inference_steps, steps_cap)
             frames = list(
                 _generate_diffusers_chunk(
                     pipe,
@@ -1642,17 +1684,14 @@ def generate_mood_mirror_chunk(
     if mood_state:
         mood_prompt = mood_state.get("prompt_hint") or ""
         prompt = f"{prompt}, {mood_prompt}" if mood_prompt else prompt
-    prompt = _maybe_prompt_drift(prompt)
+    prompt = _maybe_prompt_drift(prompt, allow_drift=prompt_drift_enabled)
     seed = None
     if config.seed is not None:
         seed = config.seed + int(time.time())
     strength = 0.2 + (1.0 - config.identity_strength) * 0.6
     temp_paths: list[str] = []
     images: list[tuple[str, int, float]] = []
-    chain_enabled = _env_bool("LTX2_CHAINING", True)
-    chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
-    chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
-    drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+    chain_enabled, chain_strength, chain_frames, drop_prefix = _resolve_chain_settings(config)
     if os.getenv("LTX2_LOG_CHAINING") == "1":
         LOGGER.info(
             "Chaining: enabled=%s strength=%.3f frames=%s drop_prefix=%s",
@@ -1674,15 +1713,12 @@ def generate_mood_mirror_chunk(
         realtime = os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"}
         guidance_scale = 3.0 + config.dream_strength * 4.0
         if realtime:
-            guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id)
+            guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id, base_cfg=realtime_cfg)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
-            num_inference_steps = min(
-                num_inference_steps,
-                _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200),
-            )
+            num_inference_steps = min(num_inference_steps, steps_cap)
         frames = list(
             _generate_video_chunk(
                 pipe,

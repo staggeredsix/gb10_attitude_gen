@@ -168,6 +168,13 @@ class RunConfig(BaseModel):
     seed: int | None = None
     dream_strength: float = 0.7
     motion: float = 0.6
+    prompt_strength: float = 1.0
+    quality_steps: int = 8
+    quality_lock: bool = False
+    quality_lock_strength: float = 0.35
+    quality_lock_frames: int = 3
+    drop_prefix_frames: int = 0
+    prompt_drift: bool = False
     base_prompt: str = Field("portrait, cinematic lighting", min_length=1)
     identity_strength: float = 0.7
     output_mode: Literal["native", "upscaled"] = DEFAULT_OUTPUT_MODE
@@ -370,6 +377,11 @@ def _validate_config(config: RunConfig) -> RunConfig:
     config.fps = max(1, min(config.fps, 60))
     config.dream_strength = float(np.clip(config.dream_strength, 0.0, 1.0))
     config.motion = float(np.clip(config.motion, 0.0, 1.0))
+    config.prompt_strength = float(np.clip(config.prompt_strength, 0.0, 2.0))
+    config.quality_steps = int(max(1, min(config.quality_steps, 60)))
+    config.quality_lock_strength = float(np.clip(config.quality_lock_strength, 0.0, 1.0))
+    config.quality_lock_frames = int(max(1, min(config.quality_lock_frames, 8)))
+    config.drop_prefix_frames = int(max(0, min(config.drop_prefix_frames, 8)))
     config.identity_strength = float(np.clip(config.identity_strength, 0.0, 1.0))
     return config
 
