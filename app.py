@@ -33,6 +33,8 @@ from ltx2_backend import (
     generate_commercial_lock_chunk,
     is_commercial_done,
     get_commercial_progress,
+    get_commercial_chunk_paths,
+    get_commercial_chunk_counts,
     reset_commercial_state,
     stop_commercial,
     generate_mood_mirror_chunk,
@@ -1055,6 +1057,11 @@ def commercial_latest(stream: int = 0) -> FileResponse:
     path, updated_at = get_latest_commercial_mp4(stream)
     if not path:
         raise HTTPException(status_code=404, detail="No commercial video available")
+    try:
+        if os.path.getsize(path) < 1024:
+            raise HTTPException(status_code=404, detail="Commercial video not ready")
+    except OSError:
+        raise HTTPException(status_code=404, detail="Commercial video not ready")
     headers = {"Cache-Control": "no-cache", "X-Updated-At": str(updated_at)}
     return FileResponse(path, media_type="video/mp4", headers=headers)
 
@@ -1064,12 +1071,15 @@ def commercial_status(stream: int = 0) -> dict[str, Any]:
     path, updated_at = get_latest_commercial_mp4(stream)
     done = is_commercial_done(stream_manager._cancel_event, stream)
     frames_done, frames_total = get_commercial_progress(stream_manager._cancel_event, stream)
+    chunks_done, chunks_total = get_commercial_chunk_counts(stream_manager._cancel_event, stream)
     return {
         "available": path is not None,
         "updated_at": updated_at,
         "done": done,
         "frames_done": frames_done,
         "frames_total": frames_total,
+        "chunks_done": chunks_done,
+        "chunks_total": chunks_total,
     }
 
 
@@ -1083,6 +1093,31 @@ def commercial_start(stream: int = 0) -> dict[str, Any]:
 def commercial_stop(stream: int = 0) -> dict[str, Any]:
     stop_commercial(stream_manager._cancel_event, stream)
     return {"ok": True}
+
+
+@app.get("/api/commercial/chunks")
+def commercial_chunks(stream: int = 0) -> dict[str, Any]:
+    if not is_commercial_done(stream_manager._cancel_event, stream):
+        return {"chunks": []}
+    paths = get_commercial_chunk_paths(stream_manager._cancel_event, stream)
+    indices = [idx for idx, path in enumerate(paths) if path]
+    return {"chunks": indices}
+
+
+@app.get("/api/commercial/chunk/{chunk_idx}.mp4")
+def commercial_chunk(chunk_idx: int, stream: int = 0) -> FileResponse:
+    if not is_commercial_done(stream_manager._cancel_event, stream):
+        raise HTTPException(status_code=404, detail="Commercial video not ready")
+    paths = get_commercial_chunk_paths(stream_manager._cancel_event, stream)
+    if chunk_idx < 0 or chunk_idx >= len(paths) or not paths[chunk_idx]:
+        raise HTTPException(status_code=404, detail="Chunk not found")
+    try:
+        if os.path.getsize(paths[chunk_idx]) < 1024:
+            raise HTTPException(status_code=404, detail="Chunk not ready")
+    except OSError:
+        raise HTTPException(status_code=404, detail="Chunk not ready")
+    headers = {"Cache-Control": "no-cache"}
+    return FileResponse(paths[chunk_idx], media_type="video/mp4", headers=headers)
 
 
 @app.get("/audio/status")

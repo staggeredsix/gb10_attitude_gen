@@ -84,6 +84,18 @@
         width: 100%;
         display: block;
       }
+      .chunk-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .chunk-grid video {
+        width: 100%;
+        display: block;
+        border-radius: 6px;
+        border: 1px solid #20263b;
+      }
       .row {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -475,6 +487,7 @@
       let lastAudioTs = 0;
       let commercialInterval = null;
       let commercialLastUpdated = [];
+      let commercialChunksLoaded = [];
 
       function setStatus(message) {
         status.textContent = message;
@@ -939,6 +952,10 @@
             video.preload = "auto";
             video.style.width = "100%";
             wrapper.appendChild(video);
+            const chunkGrid = document.createElement("div");
+            chunkGrid.className = "chunk-grid";
+            chunkGrid.id = `chunk-grid-${i}`;
+            wrapper.appendChild(chunkGrid);
           } else {
             const img = document.createElement("img");
             img.src = `/stream/${i}.mjpg?ts=${Date.now()}`;
@@ -959,6 +976,9 @@
             if (!response.ok) continue;
             const data = await response.json();
             updateCommercialProgress(data);
+            if (data.done && !commercialChunksLoaded[i]) {
+              await loadCommercialChunks(i);
+            }
             if (!data.available) continue;
             const lastUpdated = commercialLastUpdated[i] || 0;
             if (data.updated_at && data.updated_at <= lastUpdated) {
@@ -999,6 +1019,7 @@
         if (modeSelect.value !== "commercial_lock") return;
         setStatus("Starting commercial render...");
         commercialLastUpdated = [];
+        commercialChunksLoaded = [];
         setCommercialProgress(0);
         await applyConfig({ start: true });
         for (let i = 0; i < currentStreamsCount; i++) {
@@ -1035,6 +1056,30 @@
           return;
         }
         setCommercialProgress((done / total) * 100);
+      }
+
+      async function loadCommercialChunks(streamId) {
+        try {
+          const response = await fetch(`/api/commercial/chunks?stream=${streamId}`);
+          if (!response.ok) return;
+          const data = await response.json();
+          const grid = document.getElementById(`chunk-grid-${streamId}`);
+          if (!grid) return;
+          grid.innerHTML = "";
+          const chunks = data.chunks || [];
+          chunks.forEach((chunkIdx) => {
+            const clip = document.createElement("video");
+            clip.src = `/api/commercial/chunk/${chunkIdx}.mp4?stream=${streamId}&ts=${Date.now()}`;
+            clip.controls = true;
+            clip.preload = "metadata";
+            clip.playsInline = true;
+            clip.muted = true;
+            grid.appendChild(clip);
+          });
+          commercialChunksLoaded[streamId] = true;
+        } catch (_) {
+          // ignore chunk load errors
+        }
       }
 
       function buildAudioStreams(count) {
