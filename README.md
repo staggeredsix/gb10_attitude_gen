@@ -1,11 +1,12 @@
-# LTX-2 Fever Dream + Mood Mirror
+# Continuity Studio + Mood Mirror
 
-Two runnable experiences powered **only** by LTX-2:
+Three runnable experiences powered **only** by LTX-2:
 
-1. **AI Fever Dream** — continuously generates looping, surreal video streams from a prompt.
-2. **AI Mood Mirror** — uses your browser webcam to estimate a lightweight “mood” signal and mirrors it in the generated video.
+1. **Continuity Studio** — continuously generates looping video streams from a prompt.
+2. **Commercial Mode (60s Lock)** — continuity-locked streaming for stable identity/quality with periodic re-anchors.
+3. **AI Mood Mirror** — uses your browser webcam to estimate a lightweight “mood” signal and mirrors it in the generated video.
 
-Both modes run from the same web UI and share the same backend.
+All modes run from the same web UI and share the same backend.
 
 ## Requirements
 
@@ -77,8 +78,8 @@ The compose file mounts `./models` to `/models` and expects:
 
 ## UI guide
 
-- **Mode selector**: choose Fever Dream or Mood Mirror.
-- **Prompt**: used for Fever Dream, and as the base for Mood Mirror.
+- **Mode selector**: choose Continuity Studio, Commercial Mode (60s Lock), or Mood Mirror.
+- **Prompt**: used for Continuity Studio/Commercial Mode, and as the base for Mood Mirror.
 - **Resolution / FPS / Streams**: changing any value restarts all streams.
 - **Output mode**:
   - `native`: one-stage output at the requested size.

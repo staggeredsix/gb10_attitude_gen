@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LTX-2 Fever Dream + Mood Mirror</title>
+    <title>Continuity Studio + Mood Mirror</title>
     <style>
       body {
         font-family: "Inter", "Segoe UI", sans-serif;
@@ -22,6 +22,12 @@
         grid-template-columns: 360px 1fr;
         gap: 24px;
         padding: 24px 32px;
+      }
+      .left-column,
+      .right-column {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
       }
       .panel {
         background: #121522;
@@ -74,6 +80,10 @@
         width: 100%;
         display: block;
       }
+      .stream video {
+        width: 100%;
+        display: block;
+      }
       .row {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -120,178 +130,266 @@
         background: transparent;
         border: none;
       }
+      details.advanced {
+        background: #0d111c;
+        border-radius: 10px;
+        border: 1px solid #20263b;
+        padding: 0;
+      }
+      details.advanced summary {
+        cursor: pointer;
+        padding: 12px 14px;
+        font-weight: 600;
+        color: #d6dbec;
+        list-style: none;
+      }
+      details.advanced summary::-webkit-details-marker {
+        display: none;
+      }
+      details.advanced summary::after {
+        content: "▾";
+        float: right;
+        color: #9aa4bf;
+      }
+      details.advanced[open] summary::after {
+        content: "▴";
+      }
+      .advanced-body {
+        padding: 12px 14px 14px;
+        border-top: 1px solid #20263b;
+        max-height: 360px;
+        overflow: auto;
+      }
+      .advanced-body .row {
+        margin-top: 12px;
+      }
+      .progress-wrap {
+        margin-top: 12px;
+      }
+      .progress-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.8rem;
+        color: #9aa4bf;
+        margin-bottom: 6px;
+      }
+      .progress-bar {
+        width: 100%;
+        height: 8px;
+        background: #20263b;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .progress-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #4b7bff, #7ba2ff);
+        transition: width 0.25s ease;
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>AI Fever Dream + AI Mood Mirror (LTX-2)</h1>
-      <p>Generate looping LTX-2 videos from prompts or mirror your live mood from the webcam.</p>
+      <h1>Continuity Studio (LTX-2)</h1>
+      <p>Generate continuous LTX-2 video streams or mirror live mood signals from your webcam.</p>
     </header>
     <main>
-      <section class="panel">
-        <label for="mode">Mode</label>
-        <select id="mode">
-          <option value="fever">AI Fever Dream</option>
-          <option value="mood">AI Mood Mirror</option>
-          <option value="v2v">Video-to-Video (IC-LoRA)</option>
-        </select>
+      <div class="left-column">
+        <section class="panel">
+          <label for="mode">Mode</label>
+          <select id="mode">
+            <option value="fever">Continuity Studio</option>
+            <option value="commercial_lock">Commercial Mode (60s Lock)</option>
+            <option value="mood">AI Mood Mirror</option>
+            <option value="v2v">Video-to-Video (IC-LoRA)</option>
+          </select>
 
-        <label for="prompt">Prompt</label>
-        <textarea id="prompt"></textarea>
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt"></textarea>
 
-        <label for="negativePrompt">Negative prompt</label>
-        <textarea id="negativePrompt" placeholder="e.g., people, faces, text, watermark"></textarea>
+          <label for="negativePrompt">Negative prompt</label>
+          <textarea id="negativePrompt" placeholder="e.g., people, faces, text, watermark"></textarea>
 
-        <label for="resolution">Generation resolution</label>
-        <select id="resolution">
-          <option value="1280x736">1280 × 736 (native max)</option>
-          <option value="1024x576">1024 × 576</option>
-          <option value="960x544">960 × 544</option>
-          <option value="640x384">640 × 384</option>
-        </select>
+          <label for="resolution">Generation resolution</label>
+          <select id="resolution">
+            <option value="1280x736">1280 × 736 (native max)</option>
+            <option value="1024x576">1024 × 576</option>
+            <option value="960x544">960 × 544</option>
+            <option value="640x384">640 × 384</option>
+          </select>
 
-        <label for="outputResolution">Output resolution</label>
-        <select id="outputResolution">
-          <option value="none">No upscaling</option>
-          <option value="1920x1088">1920 × 1088 (1080p-ish)</option>
-          <option value="3840x2176">3840 × 2176 (4K-ish)</option>
-        </select>
+          <label for="outputResolution">Output resolution</label>
+          <select id="outputResolution">
+            <option value="none">No upscaling</option>
+            <option value="1920x1088">1920 × 1088 (1080p-ish)</option>
+            <option value="3840x2176">3840 × 2176 (4K-ish)</option>
+          </select>
 
-        <div id="dreamControls">
-          <div class="row" style="display: none;">
-            <div>
-              <label for="width">Width</label>
-              <input id="width" type="number" min="256" step="32" disabled />
+          <div id="dreamControls">
+            <div class="row" style="display: none;">
+              <div>
+                <label for="width">Width</label>
+                <input id="width" type="number" min="256" step="32" disabled />
+              </div>
+              <div>
+                <label for="height">Height</label>
+                <input id="height" type="number" min="256" step="32" disabled />
+              </div>
             </div>
-            <div>
-              <label for="height">Height</label>
-              <input id="height" type="number" min="256" step="32" disabled />
+
+            <label for="seed">Seed (optional)</label>
+            <input id="seed" type="number" placeholder="Leave empty for random" />
+
+            <label class="slider-row" for="dreamStrength">
+              <span>Dream strength</span>
+              <span class="slider-value" id="dreamStrengthValue"></span>
+            </label>
+            <input id="dreamStrength" type="range" min="0" max="1" step="0.01" value="0" />
+
+            <label class="slider-row" for="motion">
+              <span>Motion</span>
+              <span class="slider-value" id="motionValue"></span>
+            </label>
+            <input id="motion" type="range" min="0" max="1" step="0.01" />
+
+            <label class="slider-row" for="promptStrength">
+              <span>Prompt Strength</span>
+              <span class="slider-value" id="promptStrengthValue"></span>
+            </label>
+            <input id="promptStrength" type="range" min="0.8" max="2" step="0.01" value="1" />
+
+            <label class="slider-row" for="qualitySteps">
+              <span>Steps</span>
+              <span class="slider-value" id="qualityStepsValue"></span>
+            </label>
+            <input id="qualitySteps" type="range" min="4" max="24" step="1" value="8" />
+
+            <label class="toggle-row">
+              <input id="qualityLock" type="checkbox" />
+              Quality Lock
+            </label>
+
+            <div id="qualityLockControls" style="display: none;">
+              <label class="slider-row" for="qualityLockStrength">
+                <span>Lock Strength</span>
+                <span class="slider-value" id="qualityLockStrengthValue"></span>
+              </label>
+              <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.01" value="0.35" />
+
+              <label class="slider-row" for="qualityLockFrames">
+                <span>Anchor Frames</span>
+                <span class="slider-value" id="qualityLockFramesValue"></span>
+              </label>
+              <input id="qualityLockFrames" type="range" min="1" max="6" step="1" value="3" />
+
+              <label class="slider-row" for="dropPrefixFrames">
+                <span>Drop Prefix Frames</span>
+                <span class="slider-value" id="dropPrefixFramesValue"></span>
+              </label>
+              <input id="dropPrefixFrames" type="range" min="0" max="4" step="1" value="0" />
             </div>
+
+            <label class="toggle-row">
+              <input id="promptDrift" type="checkbox" />
+              Prompt Drift
+            </label>
+
+            <div id="moodControls">
+              <label for="basePrompt">Mood Mirror base prompt</label>
+              <textarea id="basePrompt"></textarea>
+
+              <label class="slider-row" for="identityStrength">
+                <span>Retain identity → Abstract mirror</span>
+                <span class="slider-value" id="identityStrengthValue"></span>
+              </label>
+              <input id="identityStrength" type="range" min="0" max="1" step="0.01" />
+
+              <button id="webcamToggle" type="button">Enable webcam</button>
+              <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
+            </div>
+
+            <div class="row">
+              <button id="startButton" type="button">Start dreaming</button>
+              <button id="applyButton" type="button">Update dream</button>
+              <button id="stopButton" type="button">Stop dreaming</button>
+            </div>
+            <div class="row" id="commercialControls" style="display: none;">
+              <button id="commercialGenerate" type="button">Generate Video</button>
+              <button id="commercialStop" type="button">Stop Generation</button>
+            </div>
+            <div class="progress-wrap" id="commercialProgress" style="display: none;">
+              <div class="progress-label">
+                <span>Generation Progress</span>
+                <span id="commercialProgressText">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="commercialProgressFill"></div>
+              </div>
+            </div>
+            <div class="status" id="status"></div>
           </div>
+        </section>
 
-          <label for="seed">Seed (optional)</label>
-          <input id="seed" type="number" placeholder="Leave empty for random" />
+        <section class="panel" id="settingsPanel">
+          <details class="advanced">
+            <summary>Advanced Settings</summary>
+            <div class="advanced-body">
+              <div class="status" id="settingsStatus"></div>
+              <div id="settingsList"></div>
+              <div class="row">
+                <button id="settingsApply" type="button">Apply settings</button>
+                <button id="settingsReset" type="button">Reset defaults</button>
+              </div>
+            </div>
+          </details>
+        </section>
+      </div>
 
-          <label class="slider-row" for="dreamStrength">
-            <span>Dream strength</span>
-            <span class="slider-value" id="dreamStrengthValue"></span>
-          </label>
-          <input id="dreamStrength" type="range" min="0" max="1" step="0.01" value="0" />
+      <div class="right-column">
+        <section class="panel" id="streamsPanel">
+          <h3 id="streamsHeading">Streams</h3>
+          <div class="grid" id="streamGrid"></div>
+        </section>
 
-          <label class="slider-row" for="motion">
-            <span>Motion</span>
-            <span class="slider-value" id="motionValue"></span>
-          </label>
-          <input id="motion" type="range" min="0" max="1" step="0.01" />
+        <section class="panel" id="audioPanel">
+          <h3>Audio</h3>
+          <label for="audioStream">Audio stream</label>
+          <select id="audioStream"></select>
+          <button id="audioToggle" type="button">Enable audio</button>
+          <div class="status" id="audioStatus"></div>
+          <audio id="audioPlayer" controls style="width: 100%; margin-top: 8px; display: none;"></audio>
+        </section>
 
-          <label class="slider-row" for="promptStrength">
-            <span>Prompt Strength</span>
-            <span class="slider-value" id="promptStrengthValue"></span>
-          </label>
-          <input id="promptStrength" type="range" min="0.8" max="2" step="0.01" value="1" />
-
-          <label class="slider-row" for="qualitySteps">
-            <span>Steps</span>
-            <span class="slider-value" id="qualityStepsValue"></span>
-          </label>
-          <input id="qualitySteps" type="range" min="4" max="24" step="1" value="8" />
-
-          <label class="toggle-row">
-            <input id="qualityLock" type="checkbox" />
-            Quality Lock
-          </label>
-
-          <div id="qualityLockControls" style="display: none;">
-            <label class="slider-row" for="qualityLockStrength">
-              <span>Lock Strength</span>
-              <span class="slider-value" id="qualityLockStrengthValue"></span>
-            </label>
-            <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.01" value="0.35" />
-
-            <label class="slider-row" for="qualityLockFrames">
-              <span>Anchor Frames</span>
-              <span class="slider-value" id="qualityLockFramesValue"></span>
-            </label>
-            <input id="qualityLockFrames" type="range" min="1" max="6" step="1" value="3" />
-
-            <label class="slider-row" for="dropPrefixFrames">
-              <span>Drop Prefix Frames</span>
-              <span class="slider-value" id="dropPrefixFramesValue"></span>
-            </label>
-            <input id="dropPrefixFrames" type="range" min="0" max="4" step="1" value="0" />
+        <section class="panel" id="v2vPanel">
+          <h3>Video-to-Video (IC-LoRA)</h3>
+          <button id="v2vUpload" type="button">Upload Video</button>
+          <input id="v2vFile" type="file" accept="video/*" style="display: none;" />
+          <div class="status">
+            Uses the main prompt + negative prompt above. Fixed 24 fps. “Stitched” means multiple shorter
+            generations are created and concatenated to reach longer durations.
           </div>
-
-          <label class="toggle-row">
-            <input id="promptDrift" type="checkbox" />
-            Prompt Drift
-          </label>
-
-          <div id="moodControls">
-            <label for="basePrompt">Mood Mirror base prompt</label>
-            <textarea id="basePrompt"></textarea>
-
-            <label class="slider-row" for="identityStrength">
-              <span>Retain identity → Abstract mirror</span>
-              <span class="slider-value" id="identityStrengthValue"></span>
-            </label>
-            <input id="identityStrength" type="range" min="0" max="1" step="0.01" />
-
-            <button id="webcamToggle" type="button">Enable webcam</button>
-            <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
-          </div>
-
           <div class="row">
-            <button id="startButton" type="button">Start dreaming</button>
-            <button id="applyButton" type="button">Update dream</button>
-            <button id="stopButton" type="button">Stop dreaming</button>
+            <div>
+              <label for="v2vStrength">Dreaming</label>
+            <input id="v2vStrength" type="range" min="0" max="1" step="0.01" value="0.7" />
+            </div>
+            <div>
+              <label for="v2vSeconds">Seconds</label>
+              <select id="v2vSeconds">
+                <option value="10">10</option>
+                <option value="30">30</option>
+                <option value="60">60</option>
+                <option value="120">120</option>
+                <option value="360">360</option>
+              </select>
+            </div>
           </div>
-          <div class="status" id="status"></div>
-        </div>
-      </section>
-
-      <section class="panel" id="settingsPanel">
-        <h3>Runtime Settings (settings.conf)</h3>
-        <div class="status" id="settingsStatus"></div>
-        <div id="settingsList"></div>
-        <div class="row" style="margin-top: 12px;">
-          <button id="settingsApply" type="button">Apply settings</button>
-          <button id="settingsReset" type="button">Reset defaults</button>
-        </div>
-      </section>
-
-      <section class="panel" id="streamsPanel">
-        <h3 id="streamsHeading">Streams</h3>
-        <div class="grid" id="streamGrid"></div>
-      </section>
-
-      <section class="panel" id="v2vPanel">
-        <h3>Video-to-Video (IC-LoRA)</h3>
-        <button id="v2vUpload" type="button">Upload Video</button>
-        <input id="v2vFile" type="file" accept="video/*" style="display: none;" />
-        <div class="status">
-          Uses the main prompt + negative prompt above. Fixed 24 fps. “Stitched” means multiple shorter
-          generations are created and concatenated to reach longer durations.
-        </div>
-        <div class="row">
-          <div>
-            <label for="v2vStrength">Dreaming</label>
-          <input id="v2vStrength" type="range" min="0" max="1" step="0.01" value="0.7" />
-          </div>
-          <div>
-            <label for="v2vSeconds">Seconds</label>
-            <select id="v2vSeconds">
-              <option value="10">10</option>
-              <option value="30">30</option>
-              <option value="60">60</option>
-              <option value="120">120</option>
-              <option value="360">360</option>
-            </select>
-          </div>
-        </div>
-        <button id="v2vSubmit" type="button">Generate Video</button>
-        <div class="status" id="v2vStatus"></div>
-        <video id="v2vPreview" controls style="width: 100%; margin-top: 8px; display: none;"></video>
-      </section>
+          <button id="v2vSubmit" type="button">Generate Video</button>
+          <div class="status" id="v2vStatus"></div>
+          <video id="v2vPreview" controls style="width: 100%; margin-top: 8px; display: none;"></video>
+        </section>
+      </div>
     </main>
 
     <video id="webcamVideo" autoplay playsinline style="display: none;"></video>
@@ -341,6 +439,11 @@
       const streamGrid = document.getElementById("streamGrid");
       const streamsPanel = document.getElementById("streamsPanel");
       const v2vPanel = document.getElementById("v2vPanel");
+      const audioPanel = document.getElementById("audioPanel");
+      const audioToggle = document.getElementById("audioToggle");
+      const audioStatus = document.getElementById("audioStatus");
+      const audioPlayer = document.getElementById("audioPlayer");
+      const audioStreamSelect = document.getElementById("audioStream");
       const settingsPanel = document.getElementById("settingsPanel");
       const settingsList = document.getElementById("settingsList");
       const settingsStatus = document.getElementById("settingsStatus");
@@ -353,6 +456,12 @@
       const v2vSubmit = document.getElementById("v2vSubmit");
       const v2vStatus = document.getElementById("v2vStatus");
       const v2vPreview = document.getElementById("v2vPreview");
+      const commercialControls = document.getElementById("commercialControls");
+      const commercialGenerate = document.getElementById("commercialGenerate");
+      const commercialStop = document.getElementById("commercialStop");
+      const commercialProgress = document.getElementById("commercialProgress");
+      const commercialProgressText = document.getElementById("commercialProgressText");
+      const commercialProgressFill = document.getElementById("commercialProgressFill");
       const V2V_FPS = 24;
       const v2vSecondsPresets = [10, 30, 60, 120, 360];
       const v2vMaxFrames = 257;
@@ -361,9 +470,18 @@
       let currentStreamsCount = 1;
       let webcamStream = null;
       let webcamInterval = null;
+      let audioEnabled = false;
+      let audioInterval = null;
+      let lastAudioTs = 0;
+      let commercialInterval = null;
+      let commercialLastUpdated = [];
 
       function setStatus(message) {
         status.textContent = message;
+      }
+
+      function setAudioStatus(message) {
+        audioStatus.textContent = message;
       }
 
       function setSettingsStatus(message) {
@@ -422,11 +540,34 @@
         streamsPanel.style.display = v2vActive ? "none" : "block";
         streamsHeading.textContent = v2vActive ? "Video-to-Video Output" : "Streams";
         moodControls.style.display = modeSelect.value === "mood" ? "block" : "none";
+        audioPanel.style.display = v2vActive ? "none" : "block";
+        const commercialActive = modeSelect.value === "commercial_lock";
+        commercialControls.style.display = commercialActive ? "block" : "none";
+        commercialProgress.style.display = commercialActive ? "block" : "none";
+        startButton.style.display = commercialActive ? "none" : "block";
+        applyButton.style.display = commercialActive ? "none" : "block";
+        stopButton.style.display = commercialActive ? "none" : "block";
+        if (commercialActive) {
+          promptDriftToggle.checked = false;
+        }
+        promptDriftToggle.disabled = commercialActive ? true : qualityLockToggle.checked;
+        if (commercialActive) {
+          startCommercialRefresh();
+        } else {
+          stopCommercialRefresh();
+        }
+        buildStreams(currentStreamsCount);
       }
 
       function updateQualityControls() {
         const enabled = qualityLockToggle.checked;
         qualityLockControls.style.display = enabled ? "block" : "none";
+        const commercialActive = modeSelect.value === "commercial_lock";
+        if (commercialActive) {
+          promptDriftToggle.checked = false;
+          promptDriftToggle.disabled = true;
+          return;
+        }
         if (enabled) {
           promptDriftToggle.checked = false;
           promptDriftToggle.disabled = true;
@@ -450,6 +591,27 @@
         const upper = key.toUpperCase();
         const numeric = Number(value);
         const isNumeric = !Number.isNaN(numeric);
+        const presets = {
+          LTX2_COMFY_PRESET: { min: 0, max: 1, step: 1 },
+          LTX2_STAGE1_STEPS: { min: 1, max: 80, step: 1 },
+          LTX2_STAGE1_CFG: { min: 0, max: 8, step: 0.01 },
+          LTX2_SCHED_MAX_SHIFT: { min: 0, max: 4, step: 0.01 },
+          LTX2_SCHED_BASE_SHIFT: { min: 0, max: 2, step: 0.01 },
+          LTX2_SCHED_TERMINAL: { min: 0, max: 1, step: 0.01 },
+          LTX2_SCHED_STRETCH: { min: 0, max: 4, step: 0.01 },
+          LTX2_STAGE2_ENABLE: { min: 0, max: 1, step: 1 },
+          LTX2_STAGE2_CFG: { min: 0, max: 4, step: 0.01 },
+          LTX2_VAE_DECODE_TILED: { min: 0, max: 1, step: 1 },
+          LTX2_VAE_TILE_SIZE: { min: 64, max: 2048, step: 64 },
+          LTX2_VAE_OVERLAP: { min: 0, max: 256, step: 8 },
+          LTX2_VAE_TEMPORAL_SIZE: { min: 64, max: 8192, step: 64 },
+          LTX2_VAE_TEMPORAL_OVERLAP: { min: 0, max: 64, step: 1 },
+        };
+        if (presets[upper]) {
+          const preset = presets[upper];
+          const valueNum = Number.isNaN(numeric) ? preset.value ?? 0 : numeric;
+          return { ...preset, value: valueNum };
+        }
         const boolHints = ["ENABLE", "DISABLE", "SKIP", "PERSIST", "USE_", "AUTOSTART", "CHAINING", "DROP_", "PROMPT_DRIFT"];
         if (boolHints.some((hint) => upper.includes(hint)) && (value === "0" || value === "1")) {
           return { min: 0, max: 1, step: 1, value: Number(value) };
@@ -502,6 +664,73 @@
         items.forEach((item) => {
           const wrapper = document.createElement("div");
           wrapper.className = "settings-item";
+          const upper = item.key.toUpperCase();
+          if (upper === "LTX2_SAMPLER_NAME") {
+            const samplerOptions = ["euler_ancestral", "euler", "heun", "ddim", "dpmpp_2m", "dpmpp_2m_sde"];
+            const label = document.createElement("label");
+            label.className = "slider-row";
+            label.htmlFor = `setting-${item.key}`;
+            const labelText = document.createElement("span");
+            labelText.textContent = item.key;
+            const valueText = document.createElement("span");
+            valueText.className = "slider-value";
+            label.appendChild(labelText);
+            label.appendChild(valueText);
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.id = `setting-${item.key}`;
+            slider.dataset.key = item.key;
+            slider.dataset.options = samplerOptions.join("|");
+            slider.min = "0";
+            slider.max = String(Math.max(0, samplerOptions.length - 1));
+            slider.step = "1";
+            const currentIdx = Math.max(0, samplerOptions.indexOf(item.value));
+            slider.value = String(currentIdx >= 0 ? currentIdx : 0);
+            valueText.textContent = samplerOptions[parseInt(slider.value || "0", 10)] || item.value || "unknown";
+            slider.addEventListener("input", () => {
+              const idx = parseInt(slider.value || "0", 10);
+              valueText.textContent = samplerOptions[idx] || "unknown";
+            });
+            wrapper.appendChild(label);
+            wrapper.appendChild(slider);
+            settingsList.appendChild(wrapper);
+            return;
+          }
+          if (upper === "LTX2_STAGE2_MANUAL_SIGMAS") {
+            const label = document.createElement("label");
+            label.className = "slider-row";
+            const labelText = document.createElement("span");
+            labelText.textContent = item.key;
+            const valueText = document.createElement("span");
+            valueText.className = "slider-value";
+            label.appendChild(labelText);
+            label.appendChild(valueText);
+            wrapper.appendChild(label);
+            const raw = (item.value || "").trim();
+            const parsed = raw
+              ? raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !Number.isNaN(v))
+              : [];
+            const sigmas = parsed.length ? parsed : [0.909375, 0.725, 0.421875, 0.0];
+            valueText.textContent = sigmas.map((v) => v.toFixed(2)).join(", ");
+            sigmas.forEach((sigma, idx) => {
+              const slider = document.createElement("input");
+              slider.type = "range";
+              slider.dataset.key = item.key;
+              slider.dataset.sigmaIndex = String(idx);
+              slider.min = "0";
+              slider.max = "1";
+              slider.step = "0.01";
+              slider.value = String(Number.isFinite(sigma) ? sigma : 0);
+              slider.addEventListener("input", () => {
+                const sliders = wrapper.querySelectorAll("input[type='range']");
+                const values = Array.from(sliders).map((s) => Number(s.value || 0).toFixed(2));
+                valueText.textContent = values.join(", ");
+              });
+              wrapper.appendChild(slider);
+            });
+            settingsList.appendChild(wrapper);
+            return;
+          }
           const range = inferSettingRange(item.key, item.value === "" ? "0" : item.value);
           const label = document.createElement("label");
           label.className = "slider-row";
@@ -553,6 +782,19 @@
           const key = slider.dataset.key;
           if (!key) return;
           const emptyAllowed = slider.dataset.emptyAllowed === "1";
+          if (key === "LTX2_SAMPLER_NAME") {
+            const optsRaw = slider.dataset.options || "";
+            const options = optsRaw.split("|").filter(Boolean);
+            const idx = parseInt(slider.value || "0", 10);
+            updates[key] = options[idx] || options[0] || "euler_ancestral";
+            return;
+          }
+          if (key === "LTX2_STAGE2_MANUAL_SIGMAS") {
+            const sigmaSliders = settingsList.querySelectorAll("input[type='range'][data-key='LTX2_STAGE2_MANUAL_SIGMAS']");
+            const sigmas = Array.from(sigmaSliders).map((s) => Number(s.value || 0).toFixed(6));
+            updates[key] = sigmas.join(",");
+            return;
+          }
           if (emptyAllowed && Number(slider.value) === 0) {
             updates[key] = "";
             return;
@@ -627,6 +869,7 @@
         const fallback = cachedConfig || {};
         return {
           mode: modeSelect.value,
+          generation_mode: modeSelect.value,
           prompt: promptInput.value.trim(),
           negative_prompt: negativePromptInput.value.trim(),
           width: parseInt(widthInput.value, 10),
@@ -685,10 +928,122 @@
         for (let i = 0; i < count; i++) {
           const wrapper = document.createElement("div");
           wrapper.className = "stream";
-          const img = document.createElement("img");
-          img.src = `/stream/${i}.mjpg?ts=${Date.now()}`;
-          wrapper.appendChild(img);
+          if (modeSelect.value === "commercial_lock") {
+            const video = document.createElement("video");
+            video.id = `commercial-video-${i}`;
+            video.src = `/api/commercial/latest.mp4?stream=${i}&ts=${Date.now()}`;
+            video.controls = true;
+            video.autoplay = true;
+            video.loop = true;
+            video.playsInline = true;
+            video.preload = "auto";
+            video.style.width = "100%";
+            wrapper.appendChild(video);
+          } else {
+            const img = document.createElement("img");
+            img.src = `/stream/${i}.mjpg?ts=${Date.now()}`;
+            wrapper.appendChild(img);
+          }
           streamGrid.appendChild(wrapper);
+        }
+        buildAudioStreams(count);
+      }
+
+      async function refreshCommercialVideos() {
+        if (modeSelect.value !== "commercial_lock") return;
+        const videos = streamGrid.querySelectorAll("video");
+        for (let i = 0; i < videos.length; i++) {
+          const video = videos[i];
+          try {
+            const response = await fetch(`/api/commercial/status?stream=${i}`);
+            if (!response.ok) continue;
+            const data = await response.json();
+            updateCommercialProgress(data);
+            if (!data.available) continue;
+            const lastUpdated = commercialLastUpdated[i] || 0;
+            if (data.updated_at && data.updated_at <= lastUpdated) {
+              if (data.done) {
+                stopCommercialRefresh();
+              }
+              continue;
+            }
+            commercialLastUpdated[i] = data.updated_at || Date.now();
+            const currentTime = video.currentTime || 0;
+            video.src = `/api/commercial/latest.mp4?stream=${i}&ts=${Date.now()}`;
+            video.load();
+            video.currentTime = currentTime;
+            await video.play();
+            if (data.done) {
+              stopCommercialRefresh();
+            }
+          } catch (_) {
+            // ignore playback failures
+          }
+        }
+      }
+
+      function startCommercialRefresh() {
+        if (commercialInterval) return;
+        commercialInterval = setInterval(refreshCommercialVideos, 8000);
+        refreshCommercialVideos();
+      }
+
+      function stopCommercialRefresh() {
+        if (commercialInterval) {
+          clearInterval(commercialInterval);
+          commercialInterval = null;
+        }
+      }
+
+      async function startCommercialGeneration() {
+        if (modeSelect.value !== "commercial_lock") return;
+        setStatus("Starting commercial render...");
+        commercialLastUpdated = [];
+        setCommercialProgress(0);
+        await applyConfig({ start: true });
+        for (let i = 0; i < currentStreamsCount; i++) {
+          const response = await fetch(`/api/commercial/start?stream=${i}`, { method: "POST" });
+          if (!response.ok) {
+            setStatus("Commercial start failed.");
+            return;
+          }
+        }
+        setStatus("Commercial render started.");
+        startCommercialRefresh();
+      }
+
+      async function stopCommercialGeneration() {
+        if (modeSelect.value !== "commercial_lock") return;
+        setStatus("Stopping commercial render...");
+        for (let i = 0; i < currentStreamsCount; i++) {
+          await fetch(`/api/commercial/stop?stream=${i}`, { method: "POST" });
+        }
+        setStatus("Commercial render stopped.");
+      }
+
+      function setCommercialProgress(percent) {
+        const clamped = Math.max(0, Math.min(100, percent));
+        commercialProgressFill.style.width = `${clamped.toFixed(1)}%`;
+        commercialProgressText.textContent = `${clamped.toFixed(0)}%`;
+      }
+
+      function updateCommercialProgress(data) {
+        const total = Number(data.frames_total || 0);
+        const done = Number(data.frames_done || 0);
+        if (!total) {
+          setCommercialProgress(0);
+          return;
+        }
+        setCommercialProgress((done / total) * 100);
+      }
+
+      function buildAudioStreams(count) {
+        audioStreamSelect.innerHTML = "";
+        for (let i = 0; i < count; i++) {
+          const option = document.createElement("option");
+          option.value = String(i);
+          option.textContent = `Stream ${i + 1}`;
+          audioStreamSelect.appendChild(option);
         }
       }
 
@@ -756,6 +1111,52 @@
         } catch (err) {
           setStatus(`Error: ${err}`);
         }
+      }
+
+      async function pollAudioStatus() {
+        if (!audioEnabled) return;
+        const streamId = parseInt(audioStreamSelect.value || "0", 10) || 0;
+        try {
+          const response = await fetch(`/audio/status?stream=${streamId}`);
+          if (!response.ok) {
+            setAudioStatus("Audio status unavailable.");
+            return;
+          }
+          const data = await response.json();
+          if (!data.available) {
+            setAudioStatus("No audio available yet.");
+            return;
+          }
+          if (data.updated_at && data.updated_at > lastAudioTs) {
+            lastAudioTs = data.updated_at;
+            audioPlayer.src = `/audio/latest.wav?stream=${streamId}&ts=${Date.now()}`;
+            audioPlayer.style.display = "block";
+            await audioPlayer.play();
+            setAudioStatus("Playing latest audio.");
+          }
+        } catch (err) {
+          setAudioStatus(`Audio error: ${err}`);
+        }
+      }
+
+      function startAudio() {
+        if (audioEnabled) return;
+        audioEnabled = true;
+        audioToggle.textContent = "Disable audio";
+        setAudioStatus("Audio enabled. Waiting for samples...");
+        pollAudioStatus();
+        audioInterval = setInterval(pollAudioStatus, 1000);
+      }
+
+      function stopAudio() {
+        audioEnabled = false;
+        audioToggle.textContent = "Enable audio";
+        setAudioStatus("Audio disabled.");
+        if (audioInterval) {
+          clearInterval(audioInterval);
+          audioInterval = null;
+        }
+        audioPlayer.pause();
       }
 
       async function sendMoodFrame() {
@@ -859,8 +1260,23 @@
       v2vUpload.addEventListener("click", () => v2vFile.click());
       v2vFile.addEventListener("change", () => handleV2vFile(v2vFile.files[0]));
       v2vSubmit.addEventListener("click", submitV2v);
+      audioToggle.addEventListener("click", () => {
+        if (audioEnabled) {
+          stopAudio();
+        } else {
+          startAudio();
+        }
+      });
+      audioStreamSelect.addEventListener("change", () => {
+        lastAudioTs = 0;
+        if (audioEnabled) {
+          pollAudioStatus();
+        }
+      });
       settingsApply.addEventListener("click", applySettings);
       settingsReset.addEventListener("click", resetSettings);
+      commercialGenerate.addEventListener("click", startCommercialGeneration);
+      commercialStop.addEventListener("click", stopCommercialGeneration);
 
       loadConfig();
       loadSettings();

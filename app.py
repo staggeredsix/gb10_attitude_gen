@@ -30,9 +30,15 @@ from ltx2_backend import (
     DEFAULT_GEMMA_ROOT,
     backend_requires_gemma,
     generate_fever_dream_chunk,
+    generate_commercial_lock_chunk,
+    is_commercial_done,
+    get_commercial_progress,
+    reset_commercial_state,
+    stop_commercial,
     generate_mood_mirror_chunk,
     generate_v2v_video,
     get_latest_audio_wav,
+    get_latest_commercial_mp4,
     set_audio_stream_id,
     log_backend_configuration,
     render_status_frame,
@@ -161,7 +167,8 @@ if DEFAULT_OUTPUT_MODE not in {"native", "upscaled"}:
 
 
 class RunConfig(BaseModel):
-    mode: Literal["fever", "mood"] = "fever"
+    mode: Literal["fever", "mood", "commercial_lock"] = "fever"
+    generation_mode: str | None = None
     prompt: str = Field("surreal dreamscape, liquid light, ethereal forms", min_length=1)
     negative_prompt: str = ""
     width: int = DEFAULT_WIDTH
@@ -266,18 +273,25 @@ class StreamManager:
             drop_old = _env_bool("LTX2_DROP_OLD_FRAMES", True)
             while not cancel_event.is_set():
                 cfg = current_config
-                queued_seconds = stream.queue.qsize() / max(1, playback_fps)
-                if queued_seconds >= buffer_seconds:
-                    time.sleep(0.01)
+                if cfg.mode == "commercial_lock" and is_commercial_done(cancel_event, stream_id):
+                    time.sleep(0.25)
                     continue
-                dynamic_low_water = max(low_water_seconds, stream.last_gen_seconds)
-                if queued_seconds > dynamic_low_water and not stream.queue.empty():
-                    time.sleep(0.005)
-                    continue
+                if cfg.mode != "commercial_lock":
+                    queued_seconds = stream.queue.qsize() / max(1, playback_fps)
+                    if queued_seconds >= buffer_seconds:
+                        time.sleep(0.01)
+                        continue
+                    dynamic_low_water = max(low_water_seconds, stream.last_gen_seconds)
+                    if queued_seconds > dynamic_low_water and not stream.queue.empty():
+                        time.sleep(0.005)
+                        continue
                 start_time = time.time()
                 set_audio_stream_id(stream_id)
                 if cfg.mode == "fever":
                     frames = generate_fever_dream_chunk(cfg, cancel_event)
+                elif cfg.mode == "commercial_lock":
+                    frames = generate_commercial_lock_chunk(cfg, cancel_event)
+                    drop_old = True
                 else:
                     frames = generate_mood_mirror_chunk(cfg, latest_camera_state, cancel_event)
                 set_audio_stream_id(None)
@@ -778,6 +792,8 @@ def reset_settings() -> dict[str, Any]:
 @app.post("/api/config")
 async def set_config(request: Request) -> RunConfig:
     payload = await request.json()
+    if "generation_mode" in payload and "mode" not in payload:
+        payload["mode"] = payload["generation_mode"]
     config = RunConfig(**payload)
     config = _validate_config(config)
     gemma_status = _gemma_status()
@@ -1034,6 +1050,41 @@ def stream(stream_id: int) -> StreamingResponse:
     return StreamingResponse(generator(), media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 
 
+@app.get("/api/commercial/latest.mp4")
+def commercial_latest(stream: int = 0) -> FileResponse:
+    path, updated_at = get_latest_commercial_mp4(stream)
+    if not path:
+        raise HTTPException(status_code=404, detail="No commercial video available")
+    headers = {"Cache-Control": "no-cache", "X-Updated-At": str(updated_at)}
+    return FileResponse(path, media_type="video/mp4", headers=headers)
+
+
+@app.get("/api/commercial/status")
+def commercial_status(stream: int = 0) -> dict[str, Any]:
+    path, updated_at = get_latest_commercial_mp4(stream)
+    done = is_commercial_done(stream_manager._cancel_event, stream)
+    frames_done, frames_total = get_commercial_progress(stream_manager._cancel_event, stream)
+    return {
+        "available": path is not None,
+        "updated_at": updated_at,
+        "done": done,
+        "frames_done": frames_done,
+        "frames_total": frames_total,
+    }
+
+
+@app.post("/api/commercial/start")
+def commercial_start(stream: int = 0) -> dict[str, Any]:
+    reset_commercial_state(stream_manager._cancel_event, stream)
+    return {"ok": True}
+
+
+@app.post("/api/commercial/stop")
+def commercial_stop(stream: int = 0) -> dict[str, Any]:
+    stop_commercial(stream_manager._cancel_event, stream)
+    return {"ok": True}
+
+
 @app.get("/audio/status")
 def audio_status(stream: int = 0) -> dict[str, Any]:
     data, ts = get_latest_audio_wav(stream)
@@ -1049,7 +1100,7 @@ def audio_latest(stream: int = 0) -> StreamingResponse:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LTX-2 Fever Dream + Mood Mirror server")
+    parser = argparse.ArgumentParser(description="Continuity Studio + Mood Mirror server")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--log-level", default="info")

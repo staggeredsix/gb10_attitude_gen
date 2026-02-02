@@ -100,8 +100,19 @@ _PIPELINE_LOCK = threading.Lock()
 _CHAIN_FRAMES: dict[tuple[str, int, int], Image.Image] = {}
 _CHAIN_COUNTER: dict[tuple[str, int, int], int] = {}
 _CHAIN_COUNTER_LOCK = threading.Lock()
+_COMMERCIAL_STATE: dict[tuple[int, int], "CommercialState"] = {}
+_COMMERCIAL_LOCK = threading.Lock()
+_COMMERCIAL_SEEDS: dict[tuple[int, int], int] = {}
+_COMMERCIAL_SEED_LOCK = threading.Lock()
+_COMMERCIAL_MP4: dict[int, tuple[str, float]] = {}
+_COMMERCIAL_MP4_LOCK = threading.Lock()
+_COMMERCIAL_DONE: dict[tuple[int, int], bool] = {}
+_COMMERCIAL_DONE_LOCK = threading.Lock()
 _CFG_STATE_LOCK = threading.Lock()
 _CFG_COUNTER: dict[tuple[str, int, int], int] = {}
+_COMFY_WARNED_SCHED = False
+_COMFY_WARNED_VAE = False
+_COMFY_WARNED_STAGE2 = False
 _AUDIO_LOCK = threading.Lock()
 _LATEST_AUDIO_BY_STREAM: dict[int, tuple[bytes, float]] = {}
 _AUDIO_STREAM_LOCAL = threading.local()
@@ -133,6 +144,30 @@ class DiffusersArtifacts:
     allow_download: bool
 
 
+@dataclass
+class CommercialState:
+    seed: int
+    prompt: str
+    negative_prompt: str
+    stage_width: int
+    stage_height: int
+    num_frames: int
+    fps: int
+    guidance_scale: float
+    num_inference_steps: int
+    chain_strength: float
+    chain_frames: int
+    drop_prefix: int
+    output_mode: str
+    reset_interval: int
+    blend_frames: int
+    chunk_index: int = 0
+    anchor_frame: Image.Image | None = None
+    max_seconds: float = 60.0
+    max_frames: int = 0
+    frames_generated: int = 0
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -159,7 +194,18 @@ def _env_float_optional(name: str) -> float | None:
         return float(value)
     except ValueError:
         LOGGER.warning("Invalid float for %s=%s; ignoring.", name, value)
-        return None
+    return None
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        return default
 
 
 def _env_int_clamped(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -814,12 +860,71 @@ def _adjust_num_frames(num_frames: int) -> int:
     return ((num_frames - 1) // 8 + 1) * 8 + 1
 
 
+def _round_down_commercial_frames(num_frames: int) -> int:
+    if num_frames < 1:
+        return 1
+    k = (num_frames - 1) // 8
+    return max(1, 1 + 8 * k)
+
+
 def _round_down_to_multiple(x: int, m: int) -> int:
     return max(m, (x // m) * m)
 
 
 def _round_up_to_multiple(x: int, m: int) -> int:
     return max(m, ((x + m - 1) // m) * m)
+
+
+def _apply_commercial_blend(
+    anchor: Image.Image | None,
+    frames: list[Image.Image],
+    blend_frames: int,
+) -> list[Image.Image]:
+    if anchor is None or blend_frames <= 0 or not frames:
+        return frames
+    count = min(blend_frames, len(frames))
+    if count <= 0:
+        return frames
+    anchor_frame = anchor
+    if anchor_frame.size != frames[0].size:
+        anchor_frame = anchor_frame.resize(frames[0].size, Image.BICUBIC)
+    for idx in range(count):
+        alpha = float(idx + 1) / float(count + 1)
+        try:
+            frames[idx] = Image.blend(anchor_frame, frames[idx], alpha)
+        except Exception:  # noqa: BLE001
+            break
+    return frames
+
+
+def _write_commercial_mp4_from_frames(
+    frames: list[Image.Image],
+    fps: int,
+    stream_id: int,
+) -> None:
+    if not frames:
+        return
+    temp_path = f"/tmp/ltx_commercial_tmp_{uuid.uuid4().hex}.mp4"
+    writer = None
+    try:
+        width, height = frames[0].size
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(temp_path, fourcc, float(fps), (width, height))
+        if not writer.isOpened():
+            raise RuntimeError("Failed to open video writer for commercial mp4.")
+        for frame in frames:
+            rgb = np.array(frame)
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            writer.write(bgr)
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Failed to write commercial mp4 from frames.")
+    finally:
+        try:
+            if writer is not None:
+                writer.release()
+        except Exception:  # noqa: BLE001
+            pass
+    _store_commercial_mp4(temp_path, stream_id)
 
 
 def _requires_64_multiple(pipe: object, output_mode: str) -> bool:
@@ -861,7 +966,45 @@ def _resolve_stage_dimensions(config) -> tuple[int, int]:
     if output_mode == "upscaled":
         stage_width = width // 2
         stage_height = height // 2
-        return stage_width, stage_height
+    return stage_width, stage_height
+
+
+def _resolve_commercial_stage_dimensions(config) -> tuple[int, int]:
+    output_mode = getattr(config, "output_mode", "native")
+    width = config.width
+    height = config.height
+    if output_mode == "upscaled":
+        return width // 2, height // 2
+    return width, height
+
+
+def _resolve_commercial_chunk_settings(config) -> tuple[int, int, int]:
+    explicit_frames = os.getenv("LTX2_NUM_FRAMES")
+    if explicit_frames:
+        try:
+            requested = int(float(explicit_frames))
+        except ValueError:
+            LOGGER.warning("Invalid LTX2_NUM_FRAMES=%s; ignoring.", explicit_frames)
+            requested = 0
+        if requested > 0:
+            num_frames = _adjust_num_frames(requested)
+            stage_width, stage_height = _resolve_commercial_stage_dimensions(config)
+            LOGGER.info("Chunk frames override: LTX2_NUM_FRAMES=%s -> %s frames", requested, num_frames)
+            return stage_width, stage_height, num_frames
+
+    target_seconds = os.getenv("LTX2_TARGET_CHUNK_SECONDS")
+    if target_seconds:
+        try:
+            chunk_seconds = float(target_seconds)
+        except ValueError:
+            LOGGER.warning("Invalid LTX2_TARGET_CHUNK_SECONDS=%s; using LTX2_CHUNK_SECONDS.", target_seconds)
+            chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 1.0)
+    else:
+        chunk_seconds = _env_float("LTX2_CHUNK_SECONDS", 1.0)
+    min_frames = _env_int_clamped("LTX2_MIN_FRAMES", 9, min_value=1, max_value=120)
+    num_frames = _adjust_num_frames(max(min_frames, int(chunk_seconds * config.fps)))
+    stage_width, stage_height = _resolve_commercial_stage_dimensions(config)
+    return stage_width, stage_height, num_frames
     return width, height
 
 
@@ -870,6 +1013,116 @@ def _assign_first_present(params: set[str], kwargs: dict[str, object], value: ob
         if name in params and value is not None:
             kwargs[name] = value
             return
+
+
+def _comfy_enabled() -> bool:
+    return _env_bool("LTX2_COMFY_PRESET", False)
+
+
+def _parse_manual_sigmas_env() -> list[float] | None:
+    raw = os.getenv("LTX2_STAGE2_MANUAL_SIGMAS", "")
+    if not raw.strip():
+        return None
+    values: list[float] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(float(part))
+        except ValueError:
+            LOGGER.warning("Invalid sigma value in LTX2_STAGE2_MANUAL_SIGMAS: %s", part)
+            return None
+    return values or None
+
+
+def _apply_comfy_pipeline_overrides(
+    *,
+    pipe: object,
+    kwargs: dict[str, object],
+    stage: str,
+) -> None:
+    if not _comfy_enabled():
+        return
+    signature = inspect.signature(pipe.__call__)
+    param_names = set(signature.parameters.keys())
+    sampler_name = os.getenv("LTX2_SAMPLER_NAME", "euler_ancestral")
+    _assign_first_present(param_names, kwargs, sampler_name, ["sampler_name", "sampler", "sampler_type"])
+    if stage == "stage1":
+        stage1_steps = _env_int("LTX2_STAGE1_STEPS", 20)
+        stage1_cfg = _env_float("LTX2_STAGE1_CFG", 4.0)
+        _assign_first_present(param_names, kwargs, stage1_cfg, ["guidance_scale", "cfg_scale", "cfg_guidance_scale"])
+        _assign_first_present(param_names, kwargs, stage1_steps, ["num_inference_steps", "steps"])
+    sched_values = {
+        "LTX2_SCHED_MAX_SHIFT": _env_float("LTX2_SCHED_MAX_SHIFT", 2.05),
+        "LTX2_SCHED_BASE_SHIFT": _env_float("LTX2_SCHED_BASE_SHIFT", 0.95),
+        "LTX2_SCHED_TERMINAL": _env_float("LTX2_SCHED_TERMINAL", 0.1),
+        "LTX2_SCHED_STRETCH": _env_float("LTX2_SCHED_STRETCH", 1.0),
+    }
+    sched_param_names = [
+        ("scheduler_max_shift", "LTX2_SCHED_MAX_SHIFT"),
+        ("max_shift", "LTX2_SCHED_MAX_SHIFT"),
+        ("scheduler_base_shift", "LTX2_SCHED_BASE_SHIFT"),
+        ("base_shift", "LTX2_SCHED_BASE_SHIFT"),
+        ("scheduler_terminal", "LTX2_SCHED_TERMINAL"),
+        ("terminal", "LTX2_SCHED_TERMINAL"),
+        ("scheduler_stretch", "LTX2_SCHED_STRETCH"),
+        ("stretch", "LTX2_SCHED_STRETCH"),
+    ]
+    supported_sched = False
+    for param, env_key in sched_param_names:
+        if param in param_names:
+            kwargs[param] = sched_values[env_key]
+            supported_sched = True
+    global _COMFY_WARNED_SCHED
+    if not supported_sched and not _COMFY_WARNED_SCHED:
+        LOGGER.warning("Comfy preset: scheduler shift params not supported by pipeline.")
+        _COMFY_WARNED_SCHED = True
+    if _env_bool("LTX2_VAE_DECODE_TILED", False):
+        tile_size = _env_int_clamped("LTX2_VAE_TILE_SIZE", 512, min_value=64, max_value=4096)
+        overlap = _env_int_clamped("LTX2_VAE_OVERLAP", 64, min_value=0, max_value=1024)
+        temporal_size = _env_int_clamped("LTX2_VAE_TEMPORAL_SIZE", 4096, min_value=64, max_value=16384)
+        temporal_overlap = _env_int_clamped("LTX2_VAE_TEMPORAL_OVERLAP", 8, min_value=0, max_value=1024)
+        vae_param_names = [
+            "vae_decode_tiled",
+            "decode_tiled",
+            "tiled_decode",
+            "vae_tile_size",
+            "tile_size",
+            "vae_tile_overlap",
+            "tile_overlap",
+            "vae_temporal_tile_size",
+            "temporal_tile_size",
+            "vae_temporal_overlap",
+            "temporal_tile_overlap",
+        ]
+        supported_vae = any(name in param_names for name in vae_param_names)
+        if "vae_decode_tiled" in param_names:
+            kwargs["vae_decode_tiled"] = True
+        if "decode_tiled" in param_names:
+            kwargs["decode_tiled"] = True
+        if "tiled_decode" in param_names:
+            kwargs["tiled_decode"] = True
+        if "vae_tile_size" in param_names:
+            kwargs["vae_tile_size"] = tile_size
+        if "tile_size" in param_names:
+            kwargs["tile_size"] = tile_size
+        if "vae_tile_overlap" in param_names:
+            kwargs["vae_tile_overlap"] = overlap
+        if "tile_overlap" in param_names:
+            kwargs["tile_overlap"] = overlap
+        if "vae_temporal_tile_size" in param_names:
+            kwargs["vae_temporal_tile_size"] = temporal_size
+        if "temporal_tile_size" in param_names:
+            kwargs["temporal_tile_size"] = temporal_size
+        if "vae_temporal_overlap" in param_names:
+            kwargs["vae_temporal_overlap"] = temporal_overlap
+        if "temporal_tile_overlap" in param_names:
+            kwargs["temporal_tile_overlap"] = temporal_overlap
+        global _COMFY_WARNED_VAE
+        if not supported_vae and not _COMFY_WARNED_VAE:
+            LOGGER.warning("Comfy preset: VAE tiled decode params not supported by pipeline.")
+            _COMFY_WARNED_VAE = True
 
 
 def _build_pipeline_kwargs(
@@ -886,6 +1139,7 @@ def _build_pipeline_kwargs(
     seed: int | None,
     output_path: str | None,
     images: list[tuple[str, int, float]] | None = None,
+    apply_comfy_overrides: bool = True,
 ) -> dict[str, object]:
     signature = inspect.signature(pipe.__call__)
     params = signature.parameters
@@ -921,6 +1175,9 @@ def _build_pipeline_kwargs(
             generator = torch.Generator(device=device).manual_seed(seed_value)
             kwargs["generator"] = generator
         _assign_first_present(param_names, kwargs, seed_value, ["seed", "random_seed"])
+
+    if apply_comfy_overrides:
+        _apply_comfy_pipeline_overrides(pipe=pipe, kwargs=kwargs, stage="stage1")
 
     return _filter_kwargs_for_callable(pipe.__call__, kwargs)
 
@@ -961,6 +1218,9 @@ def _build_diffusers_kwargs(
             generator = torch.Generator(device=device).manual_seed(seed_value)
             kwargs["generator"] = generator
         _assign_first_present(param_names, kwargs, seed_value, ["seed", "random_seed"])
+
+    if _comfy_enabled():
+        _apply_comfy_pipeline_overrides(pipe=pipe, kwargs=kwargs, stage="stage1")
 
     return _filter_kwargs_for_callable(pipe.__call__, kwargs)
 
@@ -1241,6 +1501,22 @@ def _extract_video_frames_from_pipeline_result(result: object) -> list[Image.Ima
     )
 
 
+def _extract_latents_from_pipeline_result(result: object) -> object | None:
+    if isinstance(result, dict):
+        for key in ("latents", "video_latents", "samples", "sample", "latent"):
+            if key in result:
+                return result[key]
+    if isinstance(result, (tuple, list)):
+        for item in result:
+            latents = _extract_latents_from_pipeline_result(item)
+            if latents is not None:
+                return latents
+    for attr in ("latents", "video_latents", "samples", "sample", "latent"):
+        if hasattr(result, attr):
+            return getattr(result, attr)
+    return None
+
+
 def _generate_video_chunk(
     pipe: object,
     *,
@@ -1261,6 +1537,9 @@ def _generate_video_chunk(
     supports_output_path = any(name in signature.parameters for name in ("output_path", "output"))
     output_path = f"/tmp/ltx_out_{uuid.uuid4().hex}.mp4" if supports_output_path else None
     width, height = _adjust_resolution_for_two_stage(pipe, output_mode, width, height)
+    comfy_enabled = _comfy_enabled()
+    stage2_enabled = comfy_enabled and _env_bool("LTX2_STAGE2_ENABLE", True)
+    stage2_sigmas = _parse_manual_sigmas_env() if stage2_enabled else None
     kwargs = _build_pipeline_kwargs(
         pipe,
         prompt=prompt,
@@ -1278,6 +1557,57 @@ def _generate_video_chunk(
     result = _call_ltx_pipeline(pipe, kwargs)
     _store_audio_from_result(result)
     _log_vram("chunk_end")
+
+    if stage2_enabled and stage2_sigmas:
+        sigmas_param_names = {"sigmas", "manual_sigmas", "sigmas_list", "sigma_schedule"}
+        latent_param_names = {"latents", "init_latents", "video_latents", "samples", "sample"}
+        param_names = set(signature.parameters.keys())
+        supports_sigmas = any(name in param_names for name in sigmas_param_names)
+        supports_latents = any(name in param_names for name in latent_param_names)
+        latents = _extract_latents_from_pipeline_result(result) if supports_latents else None
+        if supports_sigmas and latents is not None:
+            stage2_kwargs = _build_pipeline_kwargs(
+                pipe,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                fps=fps,
+                guidance_scale=_env_float("LTX2_STAGE2_CFG", 1.0),
+                num_inference_steps=len(stage2_sigmas),
+                seed=seed,
+                output_path=output_path,
+                images=images,
+                apply_comfy_overrides=False,
+            )
+            if "sigmas" in param_names:
+                stage2_kwargs["sigmas"] = stage2_sigmas
+            elif "manual_sigmas" in param_names:
+                stage2_kwargs["manual_sigmas"] = stage2_sigmas
+            elif "sigmas_list" in param_names:
+                stage2_kwargs["sigmas_list"] = stage2_sigmas
+            elif "sigma_schedule" in param_names:
+                stage2_kwargs["sigma_schedule"] = stage2_sigmas
+            if "latents" in param_names:
+                stage2_kwargs["latents"] = latents
+            elif "init_latents" in param_names:
+                stage2_kwargs["init_latents"] = latents
+            elif "video_latents" in param_names:
+                stage2_kwargs["video_latents"] = latents
+            elif "samples" in param_names:
+                stage2_kwargs["samples"] = latents
+            elif "sample" in param_names:
+                stage2_kwargs["sample"] = latents
+            _apply_comfy_pipeline_overrides(pipe=pipe, kwargs=stage2_kwargs, stage="stage2")
+            result = _call_ltx_pipeline(pipe, stage2_kwargs)
+            _store_audio_from_result(result)
+        else:
+            global _COMFY_WARNED_STAGE2
+            if not _COMFY_WARNED_STAGE2:
+                LOGGER.warning("Comfy preset: stage2 refine not supported by pipeline or latents unavailable.")
+                _COMFY_WARNED_STAGE2 = True
+
     if output_path and pathlib.Path(output_path).is_file():
         try:
             for frame in _yield_video_frames(output_path):
@@ -1293,6 +1623,105 @@ def _generate_video_chunk(
         frames = _extract_video_frames_from_pipeline_result(result)
     for frame in frames:
         yield frame
+
+
+def _generate_commercial_video_chunk(
+    pipe: object,
+    *,
+    output_mode: str,
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    num_frames: int,
+    fps: int,
+    guidance_scale: float,
+    num_inference_steps: int,
+    seed: int | None,
+    images: list[tuple[str, int, float]] | None = None,
+) -> tuple[list[Image.Image], str | None]:
+    _log_vram("commercial_chunk_start")
+    signature = inspect.signature(pipe.__call__)
+    supports_output_path = any(name in signature.parameters for name in ("output_path", "output"))
+    output_path = f"/tmp/ltx_commercial_tmp_{uuid.uuid4().hex}.mp4" if supports_output_path else None
+    width, height = _adjust_resolution_for_two_stage(pipe, output_mode, width, height)
+    comfy_enabled = _comfy_enabled()
+    stage2_enabled = comfy_enabled and _env_bool("LTX2_STAGE2_ENABLE", True)
+    stage2_sigmas = _parse_manual_sigmas_env() if stage2_enabled else None
+    kwargs = _build_pipeline_kwargs(
+        pipe,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        num_frames=num_frames,
+        fps=fps,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        seed=seed,
+        output_path=output_path,
+        images=images,
+    )
+    result = _call_ltx_pipeline(pipe, kwargs)
+    _store_audio_from_result(result)
+    _log_vram("commercial_chunk_end")
+
+    if stage2_enabled and stage2_sigmas:
+        sigmas_param_names = {"sigmas", "manual_sigmas", "sigmas_list", "sigma_schedule"}
+        latent_param_names = {"latents", "init_latents", "video_latents", "samples", "sample"}
+        param_names = set(signature.parameters.keys())
+        supports_sigmas = any(name in param_names for name in sigmas_param_names)
+        supports_latents = any(name in param_names for name in latent_param_names)
+        latents = _extract_latents_from_pipeline_result(result) if supports_latents else None
+        if supports_sigmas and latents is not None:
+            stage2_kwargs = _build_pipeline_kwargs(
+                pipe,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                fps=fps,
+                guidance_scale=_env_float("LTX2_STAGE2_CFG", 1.0),
+                num_inference_steps=len(stage2_sigmas),
+                seed=seed,
+                output_path=output_path,
+                images=images,
+                apply_comfy_overrides=False,
+            )
+            if "sigmas" in param_names:
+                stage2_kwargs["sigmas"] = stage2_sigmas
+            elif "manual_sigmas" in param_names:
+                stage2_kwargs["manual_sigmas"] = stage2_sigmas
+            elif "sigmas_list" in param_names:
+                stage2_kwargs["sigmas_list"] = stage2_sigmas
+            elif "sigma_schedule" in param_names:
+                stage2_kwargs["sigma_schedule"] = stage2_sigmas
+            if "latents" in param_names:
+                stage2_kwargs["latents"] = latents
+            elif "init_latents" in param_names:
+                stage2_kwargs["init_latents"] = latents
+            elif "video_latents" in param_names:
+                stage2_kwargs["video_latents"] = latents
+            elif "samples" in param_names:
+                stage2_kwargs["samples"] = latents
+            elif "sample" in param_names:
+                stage2_kwargs["sample"] = latents
+            _apply_comfy_pipeline_overrides(pipe=pipe, kwargs=stage2_kwargs, stage="stage2")
+            result = _call_ltx_pipeline(pipe, stage2_kwargs)
+            _store_audio_from_result(result)
+        else:
+            global _COMFY_WARNED_STAGE2
+            if not _COMFY_WARNED_STAGE2:
+                LOGGER.warning("Comfy preset: stage2 refine not supported by pipeline or latents unavailable.")
+                _COMFY_WARNED_STAGE2 = True
+
+    if output_path and pathlib.Path(output_path).is_file():
+        frames = list(_yield_video_frames(output_path))
+        return frames, output_path
+    with torch.no_grad():
+        frames = _extract_video_frames_from_pipeline_result(result)
+    return frames, None
 
 
 def _should_retry_without_negative_prompt(exc: Exception) -> bool:
@@ -1337,6 +1766,11 @@ def _generate_diffusers_chunk(
         num_inference_steps=num_inference_steps,
         seed=seed,
     )
+    if _comfy_enabled() and _env_bool("LTX2_STAGE2_ENABLE", True):
+        global _COMFY_WARNED_STAGE2
+        if not _COMFY_WARNED_STAGE2:
+            LOGGER.warning("Comfy preset: stage2 refine not supported on diffusers backend.")
+            _COMFY_WARNED_STAGE2 = True
     try:
         result = pipe(**kwargs)
     except Exception as exc:  # noqa: BLE001
@@ -1399,6 +1833,143 @@ def _should_reset_chain(mode: str, cancel_event: threading.Event, stream_id: int
         count = _CHAIN_COUNTER.get(key, 0) + 1
         _CHAIN_COUNTER[key] = count
     return count % reset_interval == 0
+
+
+def _commercial_key(cancel_event: threading.Event, stream_id: int) -> tuple[int, int]:
+    return (id(cancel_event), int(stream_id))
+
+
+def _store_commercial_mp4(temp_path: str | None, stream_id: int) -> None:
+    if not temp_path:
+        return
+    path = pathlib.Path(temp_path)
+    if not path.is_file():
+        return
+    stable_path = pathlib.Path(f"/tmp/ltx_commercial_{stream_id}.mp4")
+    try:
+        os.replace(path, stable_path)
+    except OSError:
+        LOGGER.exception("Failed to store commercial mp4: %s", path)
+        return
+    with _COMMERCIAL_MP4_LOCK:
+        _COMMERCIAL_MP4[int(stream_id)] = (str(stable_path), time.time())
+
+
+def get_latest_commercial_mp4(stream_id: int = 0) -> tuple[str | None, float]:
+    with _COMMERCIAL_MP4_LOCK:
+        data = _COMMERCIAL_MP4.get(int(stream_id))
+    if not data:
+        return None, 0.0
+    path, updated_at = data
+    if not path or not os.path.exists(path):
+        return None, 0.0
+    return path, updated_at
+
+
+def is_commercial_done(cancel_event: threading.Event, stream_id: int) -> bool:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_DONE_LOCK:
+        return bool(_COMMERCIAL_DONE.get(key, False))
+
+
+def get_commercial_progress(cancel_event: threading.Event, stream_id: int) -> tuple[int, int]:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_LOCK:
+        state = _COMMERCIAL_STATE.get(key)
+        if not state:
+            return 0, 0
+        return int(state.frames_generated), int(state.max_frames)
+
+
+def _mark_commercial_done(cancel_event: threading.Event, stream_id: int) -> None:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_DONE_LOCK:
+        _COMMERCIAL_DONE[key] = True
+
+
+def stop_commercial(cancel_event: threading.Event, stream_id: int) -> None:
+    _mark_commercial_done(cancel_event, stream_id)
+
+
+def reset_commercial_state(cancel_event: threading.Event, stream_id: int) -> None:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_DONE_LOCK:
+        _COMMERCIAL_DONE.pop(key, None)
+    with _COMMERCIAL_LOCK:
+        _COMMERCIAL_STATE.pop(key, None)
+    with _COMMERCIAL_SEED_LOCK:
+        _COMMERCIAL_SEEDS.pop(key, None)
+    _set_chain_frame("commercial_lock", cancel_event, None, stream_id)
+
+
+def _get_or_create_commercial_seed(cancel_event: threading.Event, stream_id: int) -> int:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_SEED_LOCK:
+        seed = _COMMERCIAL_SEEDS.get(key)
+        if seed is None:
+            seed = random.SystemRandom().randint(0, 2**31 - 1)
+            _COMMERCIAL_SEEDS[key] = seed
+    return seed
+
+
+def _get_or_create_commercial_state(
+    config,
+    cancel_event: threading.Event,
+    stream_id: int,
+) -> CommercialState:
+    key = _commercial_key(cancel_event, stream_id)
+    with _COMMERCIAL_LOCK:
+        state = _COMMERCIAL_STATE.get(key)
+        if state is not None:
+            return state
+        stage_width, stage_height, num_frames = _resolve_commercial_chunk_settings(config)
+        explicit_frames = os.getenv("LTX2_NUM_FRAMES")
+        prompt = getattr(config, "prompt", "")
+        negative_prompt = _build_negative_prompt(prompt, getattr(config, "negative_prompt", "") or "")
+        seed = config.seed if getattr(config, "seed", None) is not None else _get_or_create_commercial_seed(cancel_event, stream_id)
+        guidance_scale = 3.0 + float(getattr(config, "dream_strength", 0.0)) * 5.0
+        num_inference_steps = int(10 + float(getattr(config, "motion", 0.0)) * 10)
+        chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
+        chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
+        drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
+        reset_interval = _env_int_clamped("LTX2_COMMERCIAL_RESET_INTERVAL_CHUNKS", 8, min_value=0, max_value=10000)
+        blend_frames = _env_int_clamped("LTX2_COMMERCIAL_BLEND_FRAMES", 3, min_value=0, max_value=16)
+        max_seconds = max(0.0, _env_float("LTX2_COMMERCIAL_MAX_SECONDS", 60.0))
+        raw_max_frames = int(max_seconds * float(getattr(config, "fps", 24))) if max_seconds > 0 else 0
+        max_frames = _round_down_commercial_frames(raw_max_frames) if raw_max_frames > 0 else 0
+        if max_frames > 0 and not explicit_frames:
+            num_frames = max_frames
+        state = CommercialState(
+            seed=seed,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            stage_width=stage_width,
+            stage_height=stage_height,
+            num_frames=num_frames,
+            fps=int(getattr(config, "fps", 24)),
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            chain_strength=chain_strength,
+            chain_frames=chain_frames,
+            drop_prefix=drop_prefix,
+            output_mode=getattr(config, "output_mode", "native"),
+            reset_interval=reset_interval,
+            blend_frames=blend_frames,
+            max_seconds=max_seconds,
+            max_frames=max_frames,
+        )
+        _COMMERCIAL_STATE[key] = state
+        LOGGER.info(
+            "Commercial mode start: stream_id=%s generation_mode=commercial_lock seed=%s steps=%s cfg=%.3f reset_interval=%s chunk_index=%s reset=%s",
+            stream_id,
+            state.seed,
+            state.num_inference_steps,
+            state.guidance_scale,
+            state.reset_interval,
+            state.chunk_index,
+            False,
+        )
+        return state
 
 
 def _resolve_chunk_settings(config) -> tuple[int, int, int]:
@@ -1545,7 +2116,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
                 _set_chain_frame("fever", cancel_event, frames[-1], stream_id)
             return frames
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Fever Dream diffusers generation error: %s", exc)
+            LOGGER.exception("Continuity Studio diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
     pipe = _get_pipelines_pipe_or_status(config)
@@ -1605,7 +2176,145 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             _set_chain_frame("fever", cancel_event, frames[-1], stream_id)
         return frames
     except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("Fever Dream generation error: %s", exc)
+        LOGGER.exception("Continuity Studio generation error: %s", exc)
+        return [render_status_frame("Generation error", config.width, config.height)]
+    finally:
+        for path in temp_paths:
+            try:
+                os.remove(path)
+            except OSError:
+                LOGGER.warning("Failed to remove temporary image: %s", path)
+
+
+def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> list[Image.Image]:
+    backend = _get_backend()
+    stream_id = _current_audio_stream_id()
+    if is_commercial_done(cancel_event, stream_id):
+        return []
+    state = _get_or_create_commercial_state(config, cancel_event, stream_id)
+    remaining_frames = state.max_frames - state.frames_generated if state.max_frames > 0 else state.num_frames
+    if state.max_frames > 0 and remaining_frames <= 0:
+        _mark_commercial_done(cancel_event, stream_id)
+        LOGGER.info(
+            "Commercial mode complete: stream_id=%s generation_mode=commercial_lock max_seconds=%.1f",
+            stream_id,
+            state.max_seconds,
+        )
+        return []
+    chunk_frames = state.num_frames
+    if state.max_frames > 0:
+        chunk_frames = min(state.num_frames, remaining_frames)
+        chunk_frames = _round_down_commercial_frames(chunk_frames)
+        if chunk_frames <= 0:
+            _mark_commercial_done(cancel_event, stream_id)
+            return []
+    with _COMMERCIAL_LOCK:
+        state.chunk_index += 1
+        chunk_index = state.chunk_index
+        reset_occurred = state.reset_interval > 0 and chunk_index % state.reset_interval == 0
+    if reset_occurred:
+        _set_chain_frame("commercial_lock", cancel_event, None, stream_id)
+        LOGGER.info(
+            "Commercial mode reset: stream_id=%s generation_mode=commercial_lock seed=%s steps=%s cfg=%.3f reset_interval=%s chunk_index=%s reset=%s",
+            stream_id,
+            state.seed,
+            state.num_inference_steps,
+            state.guidance_scale,
+            state.reset_interval,
+            chunk_index,
+            True,
+        )
+
+    if backend == "diffusers":
+        pipe = _get_diffusers_pipe_or_status(config)
+        if pipe is None:
+            return [render_status_frame("Diffusers backend unavailable", config.width, config.height)]
+        try:
+            frames = list(
+                _generate_diffusers_chunk(
+                    pipe,
+                    output_mode=state.output_mode,
+                    prompt=state.prompt,
+                    negative_prompt=state.negative_prompt,
+                    width=state.stage_width,
+                    height=state.stage_height,
+                    num_frames=chunk_frames,
+                    fps=state.fps,
+                    guidance_scale=state.guidance_scale,
+                    num_inference_steps=state.num_inference_steps,
+                    seed=state.seed,
+                )
+            )
+            if state.drop_prefix > 0 and len(frames) > state.drop_prefix:
+                frames = frames[state.drop_prefix:]
+            if reset_occurred:
+                frames = _apply_commercial_blend(state.anchor_frame, frames, state.blend_frames)
+            if frames and state.anchor_frame is None:
+                state.anchor_frame = frames[0].copy()
+            if frames:
+                _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
+                state.frames_generated += len(frames)
+                if state.max_frames > 0 and state.frames_generated >= state.max_frames:
+                    _mark_commercial_done(cancel_event, stream_id)
+                    _write_commercial_mp4_from_frames(frames, state.fps, stream_id)
+            return frames
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Continuity Studio diffusers generation error: %s", exc)
+            return [render_status_frame("Generation error", config.width, config.height)]
+
+    pipe = _get_pipelines_pipe_or_status(config)
+    if pipe is None:
+        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    images: list[tuple[str, int, float]] | None = None
+    temp_paths: list[str] = []
+    try:
+        if reset_occurred and state.anchor_frame is not None:
+            anchor_path = _write_temp_pil(state.anchor_frame)
+            temp_paths.append(anchor_path)
+            images = [(anchor_path, i, state.chain_strength) for i in range(state.chain_frames)]
+        else:
+            carry = _get_chain_frame("commercial_lock", cancel_event, stream_id)
+            if carry is not None:
+                carry_path = _write_temp_pil(carry)
+                temp_paths.append(carry_path)
+                images = [(carry_path, i, state.chain_strength) for i in range(state.chain_frames)]
+        frames, output_path = _generate_commercial_video_chunk(
+            pipe,
+            output_mode=state.output_mode,
+            prompt=state.prompt,
+            negative_prompt=state.negative_prompt,
+            width=state.stage_width,
+            height=state.stage_height,
+            num_frames=chunk_frames,
+            fps=state.fps,
+            guidance_scale=state.guidance_scale,
+            num_inference_steps=state.num_inference_steps,
+            seed=state.seed,
+            images=images,
+        )
+        if state.drop_prefix > 0 and len(frames) > state.drop_prefix:
+            frames = frames[state.drop_prefix:]
+        if reset_occurred:
+            frames = _apply_commercial_blend(state.anchor_frame, frames, state.blend_frames)
+        if frames and state.anchor_frame is None:
+            state.anchor_frame = frames[0].copy()
+        if frames:
+            _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
+            state.frames_generated += len(frames)
+            if state.max_frames > 0 and state.frames_generated >= state.max_frames:
+                _mark_commercial_done(cancel_event, stream_id)
+                if output_path:
+                    _store_commercial_mp4(output_path, stream_id)
+                else:
+                    _write_commercial_mp4_from_frames(frames, state.fps, stream_id)
+            elif output_path:
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    LOGGER.warning("Failed to remove temporary video: %s", output_path)
+        return frames
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.exception("Continuity Studio generation error: %s", exc)
         return [render_status_frame("Generation error", config.width, config.height)]
     finally:
         for path in temp_paths:
