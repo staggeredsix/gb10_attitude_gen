@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable as IterableABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 import cv2
@@ -167,7 +167,9 @@ class CommercialState:
     anchor_frame: Image.Image | None = None
     last_frame: Image.Image | None = None
     last_output_path: str | None = None
-    chunk_paths: list[str] = None  # type: ignore[assignment]
+    video_chunks: list[str] = field(default_factory=list)
+    audio_chunks: list[bytes] = field(default_factory=list)
+    last_audio_ts: float = 0.0
     target_seconds: float = 35.0
     frames_per_chunk: int = 73
     total_chunks: int = 1
@@ -1084,6 +1086,70 @@ def _concat_commercial_chunks_ffmpeg(
                 pass
 
 
+def _concat_mp4_chunks(video_paths: list[str], out_path: str, fps: int) -> bool:
+    if not _ffmpeg_available():
+        _concat_commercial_chunks(video_paths, out_path, fps)
+        return os.path.exists(out_path)
+    valid_paths = [p for p in video_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return False
+    list_path = f"/tmp/ltx_commercial_concat_{uuid.uuid4().hex}.txt"
+    try:
+        with open(list_path, "w", encoding="utf-8") as handle:
+            for path in valid_paths:
+                handle.write(f"file '{path}'\n")
+        copy_cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-c",
+            "copy",
+            out_path,
+        ]
+        result = subprocess.run(copy_cmd, capture_output=True, check=False, timeout=120)
+        if result.returncode == 0:
+            return True
+        reencode_cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-r",
+            str(float(fps)),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            out_path,
+        ]
+        result = subprocess.run(reencode_cmd, capture_output=True, check=False, timeout=300)
+        if result.returncode != 0:
+            LOGGER.warning("ffmpeg concat reencode failed: %s", result.stderr.decode(errors="ignore").strip())
+            return False
+        return True
+    except Exception:
+        LOGGER.exception("Failed to concat commercial chunks.")
+        return False
+    finally:
+        try:
+            os.remove(list_path)
+        except OSError:
+            pass
+
+
 def _requires_64_multiple(pipe: object, output_mode: str) -> bool:
     if output_mode == "upscaled":
         return True
@@ -1556,6 +1622,35 @@ def _mux_audio_with_video(video_path: str, audio_bytes: bytes, output_path: str)
             os.remove(audio_path)
         except OSError:
             pass
+
+
+def _concat_wav_bytes(chunks: list[bytes]) -> str | None:
+    if not chunks:
+        return None
+    import io
+    import wave
+    output_path = f"/tmp/ltx_commercial_concat_{uuid.uuid4().hex}.wav"
+    try:
+        base_params = None
+        with wave.open(output_path, "wb") as out_wav:
+            for chunk in chunks:
+                with wave.open(io.BytesIO(chunk), "rb") as in_wav:
+                    params = in_wav.getparams()
+                    if base_params is None:
+                        base_params = params
+                        out_wav.setparams(params)
+                    elif params[:3] != base_params[:3]:
+                        LOGGER.warning("Commercial audio chunk params mismatch; skipping chunk.")
+                        continue
+                    out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
+        return output_path
+    except Exception:
+        LOGGER.exception("Failed to concat commercial audio.")
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        return None
 
 
 def _call_ltx_pipeline(pipe: object, kwargs: dict[str, object]) -> object:
@@ -2107,9 +2202,9 @@ def _store_commercial_chunk_path(
         LOGGER.info("Commercial chunk stored: stream_id=%s chunk_index=%s bytes=%s", stream_id, chunk_index, size)
     except OSError:
         LOGGER.warning("Commercial chunk size unavailable: %s", stable_path)
-    while len(state.chunk_paths) < chunk_index:
-        state.chunk_paths.append("")
-    state.chunk_paths[chunk_index - 1] = str(stable_path)
+    while len(state.video_chunks) < chunk_index:
+        state.video_chunks.append("")
+    state.video_chunks[chunk_index - 1] = str(stable_path)
     state.last_output_path = str(stable_path)
     return str(stable_path)
 
@@ -2131,7 +2226,7 @@ def get_commercial_chunk_paths(cancel_event: threading.Event, stream_id: int = 0
         state = _COMMERCIAL_STATE.get(key)
         if not state:
             return []
-        return list(state.chunk_paths or [])
+        return list(state.video_chunks or [])
 
 
 def is_commercial_done(cancel_event: threading.Event, stream_id: int) -> bool:
@@ -2156,7 +2251,7 @@ def get_commercial_chunk_counts(cancel_event: threading.Event, stream_id: int) -
         state = _COMMERCIAL_STATE.get(key)
         if not state:
             return 0, 0
-        return len([p for p in (state.chunk_paths or []) if p]), int(state.total_chunks)
+        return len([p for p in (state.video_chunks or []) if p]), int(state.total_chunks)
 
 
 def _mark_commercial_done(cancel_event: threading.Event, stream_id: int) -> None:
@@ -2176,7 +2271,7 @@ def reset_commercial_state(cancel_event: threading.Event, stream_id: int) -> Non
     with _COMMERCIAL_LOCK:
         state = _COMMERCIAL_STATE.pop(key, None)
         if state:
-            for path in state.chunk_paths or []:
+            for path in state.video_chunks or []:
                 if path:
                     try:
                         os.remove(path)
@@ -2265,7 +2360,8 @@ def _get_or_create_commercial_state(
             frames_per_chunk=frames_per_chunk,
             total_chunks=num_chunks,
         )
-        state.chunk_paths = []
+        state.video_chunks = []
+        state.audio_chunks = []
         _COMMERCIAL_STATE[key] = state
         LOGGER.info(
             "Commercial mode start: stream_id=%s generation_mode=commercial_lock seed=%s steps=%s cfg=%.3f reset_interval=%s target_seconds=%.1f effective_seconds=%.2f frames_per_chunk=%s total_chunks=%s",
@@ -2573,30 +2669,95 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
                 state.last_frame = frames[-1].copy()
                 state.frames_generated += len(frames)
-                chunk_path = f"/tmp/ltx_commercial_{stream_id}_chunk{chunk_index}.mp4"
+                chunk_path = f"/tmp/ltx_commercial_chunk_{stream_id}_{chunk_index}.mp4"
                 _write_commercial_mp4_to_path(frames, state.fps, chunk_path)
                 try:
                     size = os.path.getsize(chunk_path)
                     LOGGER.info("Commercial chunk stored: stream_id=%s chunk_index=%s bytes=%s", stream_id, chunk_index, size)
                 except OSError:
                     LOGGER.warning("Commercial chunk size unavailable: %s", chunk_path)
-                while len(state.chunk_paths) < chunk_index:
-                    state.chunk_paths.append("")
-                state.chunk_paths[chunk_index - 1] = chunk_path
+                state.video_chunks.append(chunk_path)
                 state.last_output_path = chunk_path
+                audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
+                if audio_bytes and audio_ts > state.last_audio_ts:
+                    state.audio_chunks.append(audio_bytes)
+                    state.last_audio_ts = audio_ts
             state.chunks_generated += 1
             if state.chunks_generated >= state.total_chunks:
                 _mark_commercial_done(cancel_event, stream_id)
                 final_path = f"/tmp/ltx_commercial_{stream_id}.mp4"
-                if state.chunk_paths:
-                    audio_bytes, _ = get_latest_audio_wav(stream_id)
-                    if not _concat_commercial_chunks_ffmpeg(state.chunk_paths, final_path, state.fps, audio_bytes):
-                        _concat_commercial_chunks(state.chunk_paths, final_path, state.fps)
-                        final_path = _finalize_commercial_with_audio(stream_id, final_path)
+                video_concat = f"/tmp/ltx_commercial_{stream_id}_video.mp4"
+                if state.video_chunks:
+                    _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
+                    audio_path = _concat_wav_bytes(state.audio_chunks)
+                    if _ffmpeg_available():
+                        if audio_path:
+                            cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_concat,
+                                "-i",
+                                audio_path,
+                                "-c:v",
+                                "libx264",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-profile:v",
+                                "baseline",
+                                "-level",
+                                "3.1",
+                                "-crf",
+                                "18",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "192k",
+                                "-shortest",
+                                final_path,
+                            ]
+                        else:
+                            cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_concat,
+                                "-c:v",
+                                "libx264",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-profile:v",
+                                "baseline",
+                                "-level",
+                                "3.1",
+                                "-crf",
+                                "18",
+                                "-an",
+                                final_path,
+                            ]
+                        subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+                    else:
+                        final_path = video_concat
                     _store_commercial_mp4(final_path, stream_id)
+                    for path in state.video_chunks:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                    state.video_chunks.clear()
+                    state.audio_chunks.clear()
+                    if audio_path:
+                        try:
+                            os.remove(audio_path)
+                        except OSError:
+                            pass
+                    try:
+                        if os.path.exists(video_concat):
+                            os.remove(video_concat)
+                    except OSError:
+                        pass
                 elif state.last_output_path:
-                    final_path = _finalize_commercial_with_audio(stream_id, state.last_output_path)
-                    _store_commercial_mp4(final_path, stream_id)
+                    _store_commercial_mp4(state.last_output_path, stream_id)
                 else:
                     _write_commercial_mp4_from_frames(frames, state.fps, stream_id)
             return frames
@@ -2639,16 +2800,14 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
         if output_path:
             _store_commercial_chunk_path(output_path, stream_id, chunk_index, state)
         else:
-            chunk_path = f"/tmp/ltx_commercial_{stream_id}_chunk{chunk_index}.mp4"
+            chunk_path = f"/tmp/ltx_commercial_chunk_{stream_id}_{chunk_index}.mp4"
             _write_commercial_mp4_to_path(frames, state.fps, chunk_path)
             try:
                 size = os.path.getsize(chunk_path)
                 LOGGER.info("Commercial chunk stored: stream_id=%s chunk_index=%s bytes=%s", stream_id, chunk_index, size)
             except OSError:
                 LOGGER.warning("Commercial chunk size unavailable: %s", chunk_path)
-            while len(state.chunk_paths) < chunk_index:
-                state.chunk_paths.append("")
-            state.chunk_paths[chunk_index - 1] = chunk_path
+            state.video_chunks.append(chunk_path)
             state.last_output_path = chunk_path
         if state.drop_prefix > 0 and len(frames) > state.drop_prefix:
             frames = frames[state.drop_prefix:]
@@ -2660,19 +2819,86 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
             _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
             state.last_frame = frames[-1].copy()
             state.frames_generated += len(frames)
+            audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
+            if audio_bytes and audio_ts > state.last_audio_ts:
+                state.audio_chunks.append(audio_bytes)
+                state.last_audio_ts = audio_ts
         state.chunks_generated += 1
         if state.chunks_generated >= state.total_chunks:
             _mark_commercial_done(cancel_event, stream_id)
             final_path = f"/tmp/ltx_commercial_{stream_id}.mp4"
-            if state.chunk_paths:
-                audio_bytes, _ = get_latest_audio_wav(stream_id)
-                if not _concat_commercial_chunks_ffmpeg(state.chunk_paths, final_path, state.fps, audio_bytes):
-                    _concat_commercial_chunks(state.chunk_paths, final_path, state.fps)
-                    final_path = _finalize_commercial_with_audio(stream_id, final_path)
+            video_concat = f"/tmp/ltx_commercial_{stream_id}_video.mp4"
+            if state.video_chunks:
+                _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
+                audio_path = _concat_wav_bytes(state.audio_chunks)
+                if _ffmpeg_available():
+                    if audio_path:
+                        cmd = [
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            video_concat,
+                            "-i",
+                            audio_path,
+                            "-c:v",
+                            "libx264",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-profile:v",
+                            "baseline",
+                            "-level",
+                            "3.1",
+                            "-crf",
+                            "18",
+                            "-c:a",
+                            "aac",
+                            "-b:a",
+                            "192k",
+                            "-shortest",
+                            final_path,
+                        ]
+                    else:
+                        cmd = [
+                            "ffmpeg",
+                            "-y",
+                            "-i",
+                            video_concat,
+                            "-c:v",
+                            "libx264",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-profile:v",
+                            "baseline",
+                            "-level",
+                            "3.1",
+                            "-crf",
+                            "18",
+                            "-an",
+                            final_path,
+                        ]
+                    subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+                else:
+                    final_path = video_concat
                 _store_commercial_mp4(final_path, stream_id)
+                for path in state.video_chunks:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                state.video_chunks.clear()
+                state.audio_chunks.clear()
+                if audio_path:
+                    try:
+                        os.remove(audio_path)
+                    except OSError:
+                        pass
+                try:
+                    if os.path.exists(video_concat):
+                        os.remove(video_concat)
+                except OSError:
+                    pass
             elif state.last_output_path:
-                final_path = _finalize_commercial_with_audio(stream_id, state.last_output_path)
-                _store_commercial_mp4(final_path, stream_id)
+                _store_commercial_mp4(state.last_output_path, stream_id)
             else:
                 _write_commercial_mp4_from_frames(frames, state.fps, stream_id)
         return frames
