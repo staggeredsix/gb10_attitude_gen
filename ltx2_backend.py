@@ -94,6 +94,7 @@ except Exception:
 
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.ic_lora import ICLoraPipeline
+from ltx_pipelines.utils.constants import DEFAULT_AUDIO_GUIDER_PARAMS, DEFAULT_VIDEO_GUIDER_PARAMS
 
 LOGGER = logging.getLogger("ltx2_backend")
 
@@ -764,6 +765,16 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda", *, pipeline
             "device": device,
             "fp8transformer": enable_fp8,
         }
+        distilled_lora: list[dict[str, object]] = []
+        if artifacts.distilled_lora_path:
+            distilled_lora.append(
+                {
+                    "path": artifacts.distilled_lora_path,
+                    "strength": float(artifacts.distilled_lora_strength),
+                    "ops": [],
+                }
+            )
+        init_kwargs["distilled_lora"] = distilled_lora
 
         if pipe_cls is DistilledPipeline:
             LOGGER.info("Using DistilledPipeline (fast inference)")
@@ -1503,6 +1514,8 @@ def _resolve_stage_dimensions(config) -> tuple[int, int]:
     if os.getenv("LTX2_REALTIME", "0").lower() in {"1", "true", "yes", "on"} and output_mode == "native":
         width = _env_int_clamped("LTX2_REALTIME_WIDTH", 640, min_value=64, max_value=4096)
         height = _env_int_clamped("LTX2_REALTIME_HEIGHT", 384, min_value=64, max_value=4096)
+    stage_width = width
+    stage_height = height
     if output_mode == "upscaled":
         stage_width = width // 2
         stage_height = height // 2
@@ -1690,6 +1703,11 @@ def _build_pipeline_kwargs(
         kwargs["images"] = images or []
     elif images_required and "images" not in kwargs:
         kwargs["images"] = []
+
+    if "video_guider_params" in param_names and "video_guider_params" not in kwargs:
+        kwargs["video_guider_params"] = DEFAULT_VIDEO_GUIDER_PARAMS
+    if "audio_guider_params" in param_names and "audio_guider_params" not in kwargs:
+        kwargs["audio_guider_params"] = DEFAULT_AUDIO_GUIDER_PARAMS
 
     needs_seed = any(name in param_names for name in ("seed", "random_seed", "generator"))
     seed_value = seed if seed is not None else (random.getrandbits(31) if needs_seed else None)
