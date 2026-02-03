@@ -118,20 +118,31 @@
         color: #b8c0d8;
         font-size: 0.85rem;
       }
-      .slider-row {
+      .control-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
       }
-      .slider-value {
-        min-width: 48px;
-        text-align: right;
-        color: #9aa4bf;
-        font-size: 0.8rem;
+      .control-row input[type="number"],
+      .control-row input[type="text"],
+      .control-row select {
+        max-width: 140px;
       }
       .settings-item {
         margin-top: 12px;
+      }
+      .settings-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .sigma-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+        gap: 8px;
+        margin-top: 8px;
       }
       .settings-item label {
         margin-top: 0;
@@ -253,29 +264,25 @@
             <label for="seed">Seed (optional)</label>
             <input id="seed" type="number" placeholder="Leave empty for random" />
 
-            <label class="slider-row" for="dreamStrength">
+            <label class="control-row" for="dreamStrength">
               <span>Dream strength</span>
-              <span class="slider-value" id="dreamStrengthValue"></span>
+            <input id="dreamStrength" type="number" min="0" max="1" step="0.01" value="0.15" />
             </label>
-            <input id="dreamStrength" type="range" min="0" max="1" step="0.01" value="0" />
 
-            <label class="slider-row" for="motion">
+            <label class="control-row" for="motion">
               <span>Motion</span>
-              <span class="slider-value" id="motionValue"></span>
+            <input id="motion" type="number" min="0" max="1" step="0.01" value="0.4" />
             </label>
-            <input id="motion" type="range" min="0" max="1" step="0.01" />
 
-            <label class="slider-row" for="promptStrength">
+            <label class="control-row" for="promptStrength">
               <span>Prompt Strength</span>
-              <span class="slider-value" id="promptStrengthValue"></span>
+            <input id="promptStrength" type="number" min="0.8" max="2" step="0.01" value="1.0" />
             </label>
-            <input id="promptStrength" type="range" min="0.8" max="2" step="0.01" value="1" />
 
-            <label class="slider-row" for="qualitySteps">
+            <label class="control-row" for="qualitySteps">
               <span>Steps</span>
-              <span class="slider-value" id="qualityStepsValue"></span>
+              <input id="qualitySteps" type="number" min="4" max="24" step="1" value="8" />
             </label>
-            <input id="qualitySteps" type="range" min="4" max="24" step="1" value="8" />
 
             <label class="toggle-row">
               <input id="qualityLock" type="checkbox" />
@@ -283,23 +290,20 @@
             </label>
 
             <div id="qualityLockControls" style="display: none;">
-              <label class="slider-row" for="qualityLockStrength">
+              <label class="control-row" for="qualityLockStrength">
                 <span>Lock Strength</span>
-                <span class="slider-value" id="qualityLockStrengthValue"></span>
+                <input id="qualityLockStrength" type="number" min="0.1" max="0.7" step="0.01" value="0.35" />
               </label>
-              <input id="qualityLockStrength" type="range" min="0.1" max="0.7" step="0.01" value="0.35" />
 
-              <label class="slider-row" for="qualityLockFrames">
+              <label class="control-row" for="qualityLockFrames">
                 <span>Anchor Frames</span>
-                <span class="slider-value" id="qualityLockFramesValue"></span>
+                <input id="qualityLockFrames" type="number" min="1" max="6" step="1" value="3" />
               </label>
-              <input id="qualityLockFrames" type="range" min="1" max="6" step="1" value="3" />
 
-              <label class="slider-row" for="dropPrefixFrames">
+              <label class="control-row" for="dropPrefixFrames">
                 <span>Drop Prefix Frames</span>
-                <span class="slider-value" id="dropPrefixFramesValue"></span>
+                <input id="dropPrefixFrames" type="number" min="0" max="4" step="1" value="0" />
               </label>
-              <input id="dropPrefixFrames" type="range" min="0" max="4" step="1" value="0" />
             </div>
 
             <label class="toggle-row">
@@ -311,11 +315,10 @@
               <label for="basePrompt">Mood Mirror base prompt</label>
               <textarea id="basePrompt"></textarea>
 
-              <label class="slider-row" for="identityStrength">
+              <label class="control-row" for="identityStrength">
                 <span>Retain identity → Abstract mirror</span>
-                <span class="slider-value" id="identityStrengthValue"></span>
+                <input id="identityStrength" type="number" min="0" max="1" step="0.01" value="0.7" />
               </label>
-              <input id="identityStrength" type="range" min="0" max="1" step="0.01" />
 
               <button id="webcamToggle" type="button">Enable webcam</button>
               <div class="mood-values" id="moodValues">Mood: waiting for camera…</div>
@@ -383,8 +386,10 @@
           </div>
           <div class="row">
             <div>
-              <label for="v2vStrength">Dreaming</label>
-            <input id="v2vStrength" type="range" min="0" max="1" step="0.01" value="0.7" />
+              <label class="control-row" for="v2vStrength">
+                <span>Dreaming</span>
+                <input id="v2vStrength" type="number" min="0" max="1" step="0.01" value="0.7" />
+              </label>
             </div>
             <div>
               <label for="v2vSeconds">Seconds</label>
@@ -427,14 +432,6 @@
       const qualityLockFramesInput = document.getElementById("qualityLockFrames");
       const dropPrefixFramesInput = document.getElementById("dropPrefixFrames");
       const promptDriftToggle = document.getElementById("promptDrift");
-      const dreamStrengthValue = document.getElementById("dreamStrengthValue");
-      const motionValue = document.getElementById("motionValue");
-      const promptStrengthValue = document.getElementById("promptStrengthValue");
-      const qualityStepsValue = document.getElementById("qualityStepsValue");
-      const qualityLockStrengthValue = document.getElementById("qualityLockStrengthValue");
-      const qualityLockFramesValue = document.getElementById("qualityLockFramesValue");
-      const dropPrefixFramesValue = document.getElementById("dropPrefixFramesValue");
-      const identityStrengthValue = document.getElementById("identityStrengthValue");
       const moodControls = document.getElementById("moodControls");
       const basePromptInput = document.getElementById("basePrompt");
       const identityStrengthInput = document.getElementById("identityStrength");
@@ -589,17 +586,6 @@
         }
       }
 
-      function updateSliderValues() {
-        dreamStrengthValue.textContent = Number(dreamStrengthInput.value || 0).toFixed(2);
-        motionValue.textContent = Number(motionInput.value || 0).toFixed(2);
-        promptStrengthValue.textContent = Number(promptStrengthInput.value || 0).toFixed(2);
-        qualityStepsValue.textContent = String(parseInt(qualityStepsInput.value || "0", 10));
-        qualityLockStrengthValue.textContent = Number(qualityLockStrengthInput.value || 0).toFixed(2);
-        qualityLockFramesValue.textContent = String(parseInt(qualityLockFramesInput.value || "0", 10));
-        dropPrefixFramesValue.textContent = String(parseInt(dropPrefixFramesInput.value || "0", 10));
-        identityStrengthValue.textContent = Number(identityStrengthInput.value || 0).toFixed(2);
-      }
-
       function inferSettingRange(key, value) {
         const upper = key.toUpperCase();
         const numeric = Number(value);
@@ -664,14 +650,6 @@
         return { min: 0, max, step: 0.01, value: numeric };
       }
 
-      function formatSettingValue(slider) {
-        const step = parseFloat(slider.step || "1");
-        if (step >= 1) {
-          return String(parseInt(slider.value || "0", 10));
-        }
-        return Number(slider.value || 0).toFixed(2);
-      }
-
       function buildSettingsList(items) {
         settingsList.innerHTML = "";
         items.forEach((item) => {
@@ -680,95 +658,86 @@
           const upper = item.key.toUpperCase();
           if (upper === "LTX2_SAMPLER_NAME") {
             const samplerOptions = ["euler_ancestral", "euler", "heun", "ddim", "dpmpp_2m", "dpmpp_2m_sde"];
-            const label = document.createElement("label");
-            label.className = "slider-row";
-            label.htmlFor = `setting-${item.key}`;
+            const row = document.createElement("label");
+            row.className = "settings-row";
+            row.htmlFor = `setting-${item.key}`;
             const labelText = document.createElement("span");
             labelText.textContent = item.key;
-            const valueText = document.createElement("span");
-            valueText.className = "slider-value";
-            label.appendChild(labelText);
-            label.appendChild(valueText);
-            const slider = document.createElement("input");
-            slider.type = "range";
-            slider.id = `setting-${item.key}`;
-            slider.dataset.key = item.key;
-            slider.dataset.options = samplerOptions.join("|");
-            slider.min = "0";
-            slider.max = String(Math.max(0, samplerOptions.length - 1));
-            slider.step = "1";
-            const currentIdx = Math.max(0, samplerOptions.indexOf(item.value));
-            slider.value = String(currentIdx >= 0 ? currentIdx : 0);
-            valueText.textContent = samplerOptions[parseInt(slider.value || "0", 10)] || item.value || "unknown";
-            slider.addEventListener("input", () => {
-              const idx = parseInt(slider.value || "0", 10);
-              valueText.textContent = samplerOptions[idx] || "unknown";
+            const select = document.createElement("select");
+            select.id = `setting-${item.key}`;
+            select.dataset.key = item.key;
+            select.dataset.options = samplerOptions.join("|");
+            samplerOptions.forEach((opt) => {
+              const option = document.createElement("option");
+              option.value = opt;
+              option.textContent = opt;
+              select.appendChild(option);
             });
-            wrapper.appendChild(label);
-            wrapper.appendChild(slider);
+            select.value = samplerOptions.includes(item.value) ? item.value : samplerOptions[0];
+            row.appendChild(labelText);
+            row.appendChild(select);
+            wrapper.appendChild(row);
             settingsList.appendChild(wrapper);
             return;
           }
           if (upper === "LTX2_STAGE2_MANUAL_SIGMAS") {
             const label = document.createElement("label");
-            label.className = "slider-row";
+            label.className = "settings-row";
             const labelText = document.createElement("span");
             labelText.textContent = item.key;
-            const valueText = document.createElement("span");
-            valueText.className = "slider-value";
             label.appendChild(labelText);
-            label.appendChild(valueText);
             wrapper.appendChild(label);
             const raw = (item.value || "").trim();
             const parsed = raw
               ? raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !Number.isNaN(v))
               : [];
             const sigmas = parsed.length ? parsed : [0.909375, 0.725, 0.421875, 0.0];
-            valueText.textContent = sigmas.map((v) => v.toFixed(2)).join(", ");
+            const grid = document.createElement("div");
+            grid.className = "sigma-grid";
             sigmas.forEach((sigma, idx) => {
-              const slider = document.createElement("input");
-              slider.type = "range";
-              slider.dataset.key = item.key;
-              slider.dataset.sigmaIndex = String(idx);
-              slider.min = "0";
-              slider.max = "1";
-              slider.step = "0.01";
-              slider.value = String(Number.isFinite(sigma) ? sigma : 0);
-              slider.addEventListener("input", () => {
-                const sliders = wrapper.querySelectorAll("input[type='range']");
-                const values = Array.from(sliders).map((s) => Number(s.value || 0).toFixed(2));
-                valueText.textContent = values.join(", ");
-              });
-              wrapper.appendChild(slider);
+              const input = document.createElement("input");
+              input.type = "number";
+              input.dataset.key = item.key;
+              input.dataset.sigmaIndex = String(idx);
+              input.min = "0";
+              input.max = "1";
+              input.step = "0.01";
+              input.value = String(Number.isFinite(sigma) ? sigma : 0);
+              grid.appendChild(input);
             });
+            wrapper.appendChild(grid);
             settingsList.appendChild(wrapper);
             return;
           }
           const range = inferSettingRange(item.key, item.value === "" ? "0" : item.value);
-          const label = document.createElement("label");
-          label.className = "slider-row";
-          label.htmlFor = `setting-${item.key}`;
+          const row = document.createElement("label");
+          row.className = "settings-row";
+          row.htmlFor = `setting-${item.key}`;
           const labelText = document.createElement("span");
           labelText.textContent = item.key;
-          const valueText = document.createElement("span");
-          valueText.className = "slider-value";
-          label.appendChild(labelText);
-          label.appendChild(valueText);
-          const slider = document.createElement("input");
-          slider.type = "range";
-          slider.id = `setting-${item.key}`;
-          slider.dataset.key = item.key;
-          slider.dataset.emptyAllowed = item.empty_allowed ? "1" : "0";
-          slider.min = String(range.min);
-          slider.max = String(range.max);
-          slider.step = String(range.step);
-          slider.value = String(range.value);
-          valueText.textContent = formatSettingValue(slider);
-          slider.addEventListener("input", () => {
-            valueText.textContent = formatSettingValue(slider);
-          });
-          wrapper.appendChild(label);
-          wrapper.appendChild(slider);
+          const input = document.createElement("input");
+          const numeric = Number(item.value);
+          if (!Number.isNaN(numeric) || item.value === "" || item.value === null) {
+            input.type = "number";
+            input.min = String(range.min);
+            input.max = String(range.max);
+            input.step = String(range.step);
+            if (item.value === "") {
+              input.value = "";
+              input.placeholder = "empty";
+            } else {
+              input.value = String(range.value);
+            }
+          } else {
+            input.type = "text";
+            input.value = item.value || "";
+          }
+          input.id = `setting-${item.key}`;
+          input.dataset.key = item.key;
+          input.dataset.emptyAllowed = item.empty_allowed ? "1" : "0";
+          row.appendChild(labelText);
+          row.appendChild(input);
+          wrapper.appendChild(row);
           settingsList.appendChild(wrapper);
         });
       }
@@ -790,29 +759,27 @@
 
       async function applySettings() {
         const updates = {};
-        const sliders = settingsList.querySelectorAll("input[type='range']");
-        sliders.forEach((slider) => {
-          const key = slider.dataset.key;
+        const selects = settingsList.querySelectorAll("select[data-key]");
+        selects.forEach((select) => {
+          const key = select.dataset.key;
           if (!key) return;
-          const emptyAllowed = slider.dataset.emptyAllowed === "1";
-          if (key === "LTX2_SAMPLER_NAME") {
-            const optsRaw = slider.dataset.options || "";
-            const options = optsRaw.split("|").filter(Boolean);
-            const idx = parseInt(slider.value || "0", 10);
-            updates[key] = options[idx] || options[0] || "euler_ancestral";
-            return;
-          }
-          if (key === "LTX2_STAGE2_MANUAL_SIGMAS") {
-            const sigmaSliders = settingsList.querySelectorAll("input[type='range'][data-key='LTX2_STAGE2_MANUAL_SIGMAS']");
-            const sigmas = Array.from(sigmaSliders).map((s) => Number(s.value || 0).toFixed(6));
-            updates[key] = sigmas.join(",");
-            return;
-          }
-          if (emptyAllowed && Number(slider.value) === 0) {
+          updates[key] = select.value;
+        });
+        const inputs = settingsList.querySelectorAll("input[data-key]");
+        const sigmaInputs = Array.from(inputs).filter((input) => input.dataset.key === "LTX2_STAGE2_MANUAL_SIGMAS");
+        if (sigmaInputs.length) {
+          const sigmas = sigmaInputs.map((input) => Number(input.value || 0).toFixed(6));
+          updates["LTX2_STAGE2_MANUAL_SIGMAS"] = sigmas.join(",");
+        }
+        inputs.forEach((input) => {
+          const key = input.dataset.key;
+          if (!key || key === "LTX2_STAGE2_MANUAL_SIGMAS") return;
+          const emptyAllowed = input.dataset.emptyAllowed === "1";
+          if (emptyAllowed && input.value === "") {
             updates[key] = "";
             return;
           }
-          updates[key] = slider.value;
+          updates[key] = input.value;
         });
         setSettingsStatus("Applying settings...");
         try {
@@ -1273,7 +1240,6 @@
         promptDriftToggle.checked = Boolean(config.prompt_drift);
         basePromptInput.value = config.base_prompt || "portrait, cinematic lighting";
         identityStrengthInput.value = config.identity_strength ?? 0.7;
-        updateSliderValues();
         updateQualityControls();
         updateMoodControls();
         updateV2vSecondsOptions();
@@ -1285,14 +1251,6 @@
       startButton.addEventListener("click", () => applyConfig({ start: true }));
       applyButton.addEventListener("click", () => applyConfig({ start: false }));
       stopButton.addEventListener("click", stopInference);
-      dreamStrengthInput.addEventListener("input", updateSliderValues);
-      motionInput.addEventListener("input", updateSliderValues);
-      promptStrengthInput.addEventListener("input", updateSliderValues);
-      qualityStepsInput.addEventListener("input", updateSliderValues);
-      qualityLockStrengthInput.addEventListener("input", updateSliderValues);
-      qualityLockFramesInput.addEventListener("input", updateSliderValues);
-      dropPrefixFramesInput.addEventListener("input", updateSliderValues);
-      identityStrengthInput.addEventListener("input", updateSliderValues);
       resolutionSelect.addEventListener("change", () => {
         const [w, h] = resolutionSelect.value.split("x").map((v) => parseInt(v, 10));
         if (!Number.isNaN(w) && !Number.isNaN(h)) {
@@ -1327,7 +1285,6 @@
       loadConfig();
       loadSettings();
       applyOutputResolutionToMode();
-      updateSliderValues();
     </script>
   </body>
 </html>
