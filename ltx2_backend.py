@@ -179,6 +179,94 @@ class CommercialState:
     frames_generated: int = 0
 
 
+@dataclass(frozen=True)
+class ChunkResult:
+    frames: list[Image.Image]
+
+
+class PipelineAdapter:
+    def generate_chunk(
+        self,
+        *,
+        output_mode: str,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        fps: int,
+        guidance_scale: float,
+        num_inference_steps: int,
+        seed: int | None,
+        images: list[tuple[str, int, float]] | None,
+    ) -> ChunkResult:
+        raise NotImplementedError
+
+
+class DistilledPipelineAdapter(PipelineAdapter):
+    def __init__(self, config, *, pipeline_variant: str | None = None) -> None:
+        self._config = config
+        self._pipeline_variant = pipeline_variant
+
+    def generate_chunk(
+        self,
+        *,
+        output_mode: str,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        fps: int,
+        guidance_scale: float,
+        num_inference_steps: int,
+        seed: int | None,
+        images: list[tuple[str, int, float]] | None,
+    ) -> ChunkResult:
+        pipe = _get_pipelines_pipe_or_status(self._config, pipeline_variant=self._pipeline_variant)
+        if pipe is None:
+            raise RuntimeError("LTX-2 pipeline unavailable.")
+        frames = list(
+            _generate_video_chunk(
+                pipe,
+                output_mode=output_mode,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                fps=fps,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
+                seed=seed,
+                images=images,
+            )
+        )
+        return ChunkResult(frames=frames)
+
+
+class ComfyQualityPipelineAdapter(PipelineAdapter):
+    def __init__(self, config) -> None:
+        self._config = config
+
+    def generate_chunk(
+        self,
+        *,
+        output_mode: str,
+        prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        fps: int,
+        guidance_scale: float,
+        num_inference_steps: int,
+        seed: int | None,
+        images: list[tuple[str, int, float]] | None,
+    ) -> ChunkResult:
+        raise NotImplementedError("TODO: implement ComfyQualityPipelineAdapter using vendored LTX-2 primitives.")
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None:
@@ -254,6 +342,21 @@ def _get_backend() -> str:
 
 def backend_requires_gemma() -> bool:
     return _get_backend() == "pipelines"
+
+
+def _get_pipeline_mode() -> str:
+    mode = os.getenv("PIPELINE_MODE", "distilled").strip().lower()
+    if mode not in {"distilled", "comfy_quality"}:
+        LOGGER.warning("Invalid PIPELINE_MODE=%s; defaulting to distilled", mode)
+        return "distilled"
+    return mode
+
+
+def _get_pipeline_adapter(config, *, pipeline_variant: str | None = None) -> PipelineAdapter:
+    mode = _get_pipeline_mode()
+    if mode == "comfy_quality":
+        return ComfyQualityPipelineAdapter(config)
+    return DistilledPipelineAdapter(config, pipeline_variant=pipeline_variant)
 
 
 def _has_preprocessor_config(root: pathlib.Path) -> bool:
@@ -2830,11 +2933,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             return [render_status_frame("Generation error", config.width, config.height)]
 
     pipeline_variant = os.getenv("LTX2_COMMERCIAL_PIPELINE_VARIANT", "").strip().lower()
-    if chunk_index == 1:
-        LOGGER.info("Commercial pipeline variant=%s", pipeline_variant or "default")
-    pipe = _get_pipelines_pipe_or_status(config, pipeline_variant=pipeline_variant or None)
-    if pipe is None:
-        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    adapter = _get_pipeline_adapter(config, pipeline_variant=pipeline_variant or None)
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
     prompt = _maybe_prompt_drift(config.prompt, allow_drift=prompt_drift_enabled)
     seed = None
@@ -2867,27 +2966,28 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
             num_inference_steps = min(num_inference_steps, steps_cap)
-        frames = list(
-            _generate_video_chunk(
-                pipe,
-                output_mode=output_mode,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=stage_width,
-                height=stage_height,
-                num_frames=num_frames,
-                fps=config.fps,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                seed=seed,
-                images=images,
-            )
+        chunk = adapter.generate_chunk(
+            output_mode=output_mode,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=stage_width,
+            height=stage_height,
+            num_frames=num_frames,
+            fps=config.fps,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            seed=seed,
+            images=images,
         )
+        frames = chunk.frames
         if drop_prefix > 0 and len(frames) > drop_prefix:
             frames = frames[drop_prefix:]
         if frames:
             _set_chain_frame("fever", cancel_event, frames[-1], stream_id)
         return frames
+    except NotImplementedError as exc:
+        LOGGER.warning("Pipeline adapter unavailable: %s", exc)
+        return [render_status_frame("Pipeline mode not implemented", config.width, config.height)]
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Continuity Studio generation error: %s", exc)
         return [render_status_frame("Generation error", config.width, config.height)]
@@ -3341,9 +3441,7 @@ def generate_mood_mirror_chunk(
             LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
-    pipe = _get_pipelines_pipe_or_status(config)
-    if pipe is None:
-        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    adapter = _get_pipeline_adapter(config)
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
     camera_frame, mood_state = latest_camera_state()
     if camera_frame is None:
@@ -3387,27 +3485,28 @@ def generate_mood_mirror_chunk(
         num_inference_steps = int(10 + config.motion * 10)
         if realtime:
             num_inference_steps = min(num_inference_steps, steps_cap)
-        frames = list(
-            _generate_video_chunk(
-                pipe,
-                output_mode=output_mode,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=stage_width,
-                height=stage_height,
-                num_frames=num_frames,
-                fps=config.fps,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                seed=seed,
-                images=images,
-            )
+        chunk = adapter.generate_chunk(
+            output_mode=output_mode,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=stage_width,
+            height=stage_height,
+            num_frames=num_frames,
+            fps=config.fps,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            seed=seed,
+            images=images,
         )
+        frames = chunk.frames
         if drop_prefix > 0 and len(frames) > drop_prefix:
             frames = frames[drop_prefix:]
         if frames:
             _set_chain_frame("mood", cancel_event, frames[-1], stream_id)
         return frames
+    except NotImplementedError as exc:
+        LOGGER.warning("Pipeline adapter unavailable: %s", exc)
+        return [render_status_frame("Pipeline mode not implemented", config.width, config.height)]
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Mood Mirror generation error: %s", exc)
         return [render_status_frame("Generation error", config.width, config.height)]
