@@ -92,6 +92,7 @@ try:
 except Exception:
     pass
 
+from ltx_core.loader import LoraPathStrengthAndSDOps
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_pipelines.ic_lora import ICLoraPipeline
 from ltx_pipelines.utils.constants import DEFAULT_AUDIO_GUIDER_PARAMS, DEFAULT_VIDEO_GUIDER_PARAMS
@@ -669,6 +670,30 @@ def _filter_kwargs_for_callable(func: Callable[..., object], kwargs: dict[str, o
     return {key: value for key, value in kwargs.items() if key in allowed}
 
 
+def _normalize_loras(loras: Iterable[object]) -> list[LoraPathStrengthAndSDOps]:
+    normalized: list[LoraPathStrengthAndSDOps] = []
+    for entry in loras:
+        if isinstance(entry, LoraPathStrengthAndSDOps):
+            normalized.append(entry)
+            continue
+        if isinstance(entry, dict):
+            path = entry.get("path")
+            if not path:
+                continue
+            strength = float(entry.get("strength", 1.0))
+            ops = entry.get("ops", [])
+            normalized.append(LoraPathStrengthAndSDOps(path, strength, ops))
+            continue
+        try:
+            path = getattr(entry, "path")
+            strength = float(getattr(entry, "strength"))
+            ops = getattr(entry, "sd_ops", getattr(entry, "ops", []))
+            normalized.append(LoraPathStrengthAndSDOps(path, strength, ops))
+        except Exception:
+            continue
+    return normalized
+
+
 def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object], *, output_mode: str) -> object:
     if hasattr(pipe_cls, "from_pretrained"):
         factory = getattr(pipe_cls, "from_pretrained")
@@ -761,11 +786,11 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda", *, pipeline
             "checkpoint_path": artifacts.checkpoint_path,
             "spatial_upsampler_path": artifacts.spatial_upsampler_path,
             "gemma_root": artifacts.gemma_root,
-            "loras": artifacts.loras,
+            "loras": _normalize_loras(artifacts.loras),
             "device": device,
             "fp8transformer": enable_fp8,
         }
-        distilled_lora: list[dict[str, object]] = []
+        distilled_lora: list[object] = []
         if artifacts.distilled_lora_path:
             distilled_lora.append(
                 {
@@ -774,7 +799,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda", *, pipeline
                     "ops": [],
                 }
             )
-        init_kwargs["distilled_lora"] = distilled_lora
+        init_kwargs["distilled_lora"] = _normalize_loras(distilled_lora)
 
         if pipe_cls is DistilledPipeline:
             LOGGER.info("Using DistilledPipeline (fast inference)")
@@ -890,7 +915,7 @@ def _load_ic_lora_pipeline(device: str = "cuda") -> object:
             "checkpoint_path": artifacts.checkpoint_path,
             "spatial_upsampler_path": artifacts.spatial_upsampler_path,
             "gemma_root": artifacts.gemma_root,
-            "loras": loras,
+            "loras": _normalize_loras(loras),
             "device": device,
             "fp8transformer": enable_fp8,
         }
