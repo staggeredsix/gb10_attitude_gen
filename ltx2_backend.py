@@ -550,6 +550,82 @@ def _resolve_spatial_upsampler_path(checkpoint_path: str) -> str:
     )
 
 
+def _resolve_distilled_lora_path(checkpoint_path: str) -> str | None:
+    env_path = os.getenv("LTX2_DISTILLED_LORA_PATH")
+    if env_path:
+        candidate = pathlib.Path(env_path).expanduser()
+        if candidate.exists():
+            return str(candidate)
+        LOGGER.warning("LTX2_DISTILLED_LORA_PATH does not exist at %s; searching cache.", candidate)
+
+    filenames = [
+        "ltx-2-distilled-lora-x2-1.0.safetensors",
+        "ltx-2-19b-distilled-lora-384.safetensors",
+    ]
+    checkpoint_dir = pathlib.Path(checkpoint_path).expanduser().parent
+    for filename in filenames:
+        candidate = checkpoint_dir / filename
+        if candidate.is_file():
+            return str(candidate)
+
+    snapshot_dir = os.getenv("LTX2_SNAPSHOT_DIR")
+    if snapshot_dir:
+        snapshot_path = pathlib.Path(snapshot_dir).expanduser()
+        if snapshot_path.exists():
+            snapshots_root = snapshot_path / "snapshots"
+            candidate_roots: list[pathlib.Path] = []
+            if snapshots_root.is_dir():
+                candidate_roots.extend(
+                    sorted(
+                        (p for p in snapshots_root.iterdir() if p.is_dir()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                )
+            candidate_roots.append(snapshot_path)
+
+            for root in candidate_roots:
+                for filename in filenames:
+                    candidate = root / filename
+                    if candidate.is_file():
+                        return str(candidate)
+        else:
+            LOGGER.warning(
+                "LTX2_SNAPSHOT_DIR does not exist at %s; falling back to cache search.",
+                snapshot_path,
+            )
+
+    cache_roots = [
+        os.getenv("HUGGINGFACE_HUB_CACHE"),
+        os.getenv("HF_HOME"),
+        "/models/huggingface/hub",
+        "/models/ltx2",
+    ]
+    for root in filter(None, cache_roots):
+        root_path = pathlib.Path(root).expanduser()
+        if not root_path.exists():
+            continue
+        repo_root = root_path / "models--Lightricks--LTX-2"
+        search_root = repo_root if repo_root.exists() else root_path
+        for filename in filenames:
+            candidates = sorted(
+                search_root.rglob(filename),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                return str(candidates[0])
+        pattern_candidates = sorted(
+            search_root.rglob("*distilled-lora*.safetensors"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if pattern_candidates:
+            return str(pattern_candidates[0])
+
+    return None
+
+
 def _require_env_path(name: str, *, required: bool = True) -> str | None:
     value = os.getenv(name)
     if not value:
@@ -576,7 +652,7 @@ def _resolve_artifacts(output_mode: str, *, require_gemma: bool = True) -> LTX2A
             f"download_model.sh ({DEFAULT_GEMMA_MODEL_ID}). ({gemma_reason})"
         )
     spatial_upsampler_path = _resolve_spatial_upsampler_path(checkpoint_path)
-    distilled_lora_path = _require_env_path("LTX2_DISTILLED_LORA_PATH", required=False)
+    distilled_lora_path = _resolve_distilled_lora_path(checkpoint_path)
     distilled_lora_strength = _env_float("LTX2_DISTILLED_LORA_STRENGTH", 0.6)
     loras: list[dict[str, object]] = []
     LOGGER.info("LTX-2 spatial_upsampler_path=%s", spatial_upsampler_path)
@@ -799,6 +875,8 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda", *, pipeline
                     "ops": [],
                 }
             )
+        elif variant == "full":
+            LOGGER.warning("Distilled LoRA path not resolved; stage-2 quality may degrade.")
         init_kwargs["distilled_lora"] = _normalize_loras(distilled_lora)
 
         if pipe_cls is DistilledPipeline:
@@ -1505,6 +1583,8 @@ def _extract_wav_from_mp4(video_path: str, sample_rate: int) -> bytes | None:
 
 def _requires_64_multiple(pipe: object, output_mode: str) -> bool:
     if output_mode == "upscaled":
+        return True
+    if hasattr(pipe, "stage_2_model_ledger"):
         return True
     if "Distilled" in pipe.__class__.__name__:
         return True
