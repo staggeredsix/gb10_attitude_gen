@@ -361,13 +361,27 @@ def _validate_config(config: RunConfig) -> RunConfig:
                     "This app blocks minors/children and NSFW/sexual content."
                 ),
             )
-    if config.width % 32 != 0 or config.height % 32 != 0:
-        raise HTTPException(status_code=400, detail="Width and height must be multiples of 32.")
-    if config.output_mode == "upscaled" and (config.width % 64 != 0 or config.height % 64 != 0):
-        raise HTTPException(
-            status_code=400,
-            detail="Upscaled output requires width and height to be multiples of 64.",
+    pipeline_variant = os.getenv("LTX2_PIPELINE_VARIANT", "distilled").strip().lower()
+    require_64 = config.output_mode == "upscaled" or pipeline_variant == "full" or os.getenv("LTX2_USE_DISTILLED", "0") in {"1", "true", "yes", "on"}
+    multiple = 64 if require_64 else 32
+    if config.width % multiple != 0 or config.height % multiple != 0:
+        new_w = _round_down_to_multiple(config.width, multiple)
+        new_h = _round_down_to_multiple(config.height, multiple)
+        if new_w < multiple or new_h < multiple:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Width and height must be at least {multiple} and multiples of {multiple}.",
+            )
+        LOGGER.warning(
+            "Adjusted resolution to %s-multiple: %sx%s -> %sx%s",
+            multiple,
+            config.width,
+            config.height,
+            new_w,
+            new_h,
         )
+        config.width = new_w
+        config.height = new_h
     if config.output_mode == "native":
         max_native_w = _env_int_clamped("LTX2_NATIVE_MAX_WIDTH", 1280, min_value=64, max_value=8192)
         max_native_h = _env_int_clamped("LTX2_NATIVE_MAX_HEIGHT", 736, min_value=64, max_value=8192)
