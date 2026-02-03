@@ -48,6 +48,18 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int_clamped(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return max(min_value, min(default, max_value))
+    try:
+        parsed = int(float(value))
+    except ValueError:
+        LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
 def log_cuda_mem(tag: str) -> tuple[int, int] | None:
     if not torch.cuda.is_available():
         return None
@@ -212,8 +224,10 @@ def render_comfy_equivalent(
     video_encoder = base_ledger.video_encoder()
     transformer_stage1 = base_ledger.transformer()
     scheduler = LTX2Scheduler()
+    stage1_steps = _env_int_clamped("LTX2_COMMERCIAL_STEPS", _env_int_clamped("LTX2_STAGE1_STEPS", 20, min_value=1, max_value=200), min_value=1, max_value=200)
+    LOGGER.info("Comfy-equivalent stage1 steps=%s", stage1_steps)
     sigmas = scheduler.execute(
-        steps=20,
+        steps=stage1_steps,
         max_shift=2.05,
         base_shift=0.95,
         stretch=True,

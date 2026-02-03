@@ -2804,6 +2804,8 @@ def _store_commercial_chunk_path(
         state.video_chunks.append("")
     state.video_chunks[chunk_index - 1] = str(stable_path)
     state.last_output_path = str(stable_path)
+    with _COMMERCIAL_MP4_LOCK:
+        _COMMERCIAL_MP4[int(stream_id)] = (str(stable_path), time.time())
     return str(stable_path)
 
 
@@ -3325,6 +3327,13 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
         if pipe is None:
             return [render_status_frame("Diffusers backend unavailable", config.width, config.height)]
         try:
+            chunk_seed = state.seed + chunk_index if chunk_index > 1 else state.seed
+            LOGGER.info(
+                "Commercial mode seed: stream_id=%s chunk_index=%s seed=%s",
+                stream_id,
+                chunk_index,
+                chunk_seed,
+            )
             frames = list(
                 _generate_diffusers_chunk(
                     pipe,
@@ -3337,7 +3346,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                     fps=state.fps,
                     guidance_scale=state.guidance_scale,
                     num_inference_steps=state.num_inference_steps,
-                    seed=state.seed,
+                    seed=chunk_seed,
                 )
             )
             if state.drop_prefix > 0 and len(frames) > state.drop_prefix:
@@ -3464,6 +3473,14 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 return [render_status_frame("Checkpoint missing", config.width, config.height)]
 
             chunk_path = f"/tmp/ltx_commercial_tmp_{uuid.uuid4().hex}.mp4"
+            chunk_seed = state.seed + chunk_index
+            LOGGER.info(
+                "Commercial comfy-equivalent seed: stream_id=%s chunk_index=%s seed_stage1=%s seed_stage2=%s",
+                stream_id,
+                chunk_index,
+                chunk_seed,
+                chunk_seed + 1,
+            )
             output_path = render_comfy_equivalent_mp4(
                 prompt=state.prompt,
                 negative_prompt=state.negative_prompt,
@@ -3476,11 +3493,23 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 distilled_lora_path=str(artifacts.distilled_lora_path or ""),
                 distilled_lora_strength=float(getattr(artifacts, "distilled_lora_strength", 1.0)),
                 spatial_upscaler_path=str(artifacts.spatial_upsampler_path or ""),
+                seed_stage1=int(chunk_seed),
+                seed_stage2=int(chunk_seed + 1),
                 out_mp4_path=chunk_path,
                 chunk_index=chunk_index,
             )
             frames = _decode_video_to_frames(output_path)
         else:
+            chunk_seed = state.seed
+            supports_images = "images" in inspect.signature(pipe.__call__).parameters
+            if chunk_index > 1 and (not images or not supports_images):
+                chunk_seed = state.seed + chunk_index
+            LOGGER.info(
+                "Commercial mode seed: stream_id=%s chunk_index=%s seed=%s",
+                stream_id,
+                chunk_index,
+                chunk_seed,
+            )
             frames, output_path = _generate_commercial_video_chunk(
                 pipe,
                 stream_id=stream_id,
@@ -3494,7 +3523,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 fps=state.fps,
                 guidance_scale=state.guidance_scale,
                 num_inference_steps=state.num_inference_steps,
-                seed=state.seed,
+                seed=chunk_seed,
                 images=images,
                 apply_comfy_overrides=use_comfy,
             )
@@ -3512,6 +3541,8 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 LOGGER.warning("Commercial chunk size unavailable: %s", chunk_path)
             state.video_chunks.append(chunk_path)
             state.last_output_path = chunk_path
+            with _COMMERCIAL_MP4_LOCK:
+                _COMMERCIAL_MP4[int(stream_id)] = (str(chunk_path), time.time())
         if state.drop_prefix > 0 and len(frames) > state.drop_prefix:
             frames = frames[state.drop_prefix:]
         if reset_occurred:
