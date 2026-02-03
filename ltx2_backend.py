@@ -3238,6 +3238,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 distilled_lora_strength=float(getattr(artifacts, "distilled_lora_strength", 1.0)),
                 spatial_upscaler_path=str(artifacts.spatial_upsampler_path or ""),
                 out_mp4_path=chunk_path,
+                chunk_index=chunk_index,
             )
             frames = _decode_video_to_frames(output_path)
         else:

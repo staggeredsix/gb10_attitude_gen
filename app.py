@@ -26,6 +26,17 @@ from settings_loader import load_settings_conf
 
 load_settings_conf()
 
+def _ensure_cuda_alloc_conf() -> None:
+    if "PYTORCH_CUDA_ALLOC_CONF" in os.environ:
+        return
+    conf = "expandable_segments:True"
+    if os.getenv("USE_MAX_SPLIT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        conf = f"{conf},max_split_size_mb=512"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = conf
+
+
+_ensure_cuda_alloc_conf()
+
 from ltx2_backend import (
     DEFAULT_GEMMA_ROOT,
     backend_requires_gemma,
