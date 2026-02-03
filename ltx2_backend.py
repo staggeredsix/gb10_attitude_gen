@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import sys
 import subprocess
 import threading
@@ -1027,6 +1028,58 @@ def _write_commercial_mp4_to_path(
                 writer.release()
         except Exception:  # noqa: BLE001
             pass
+
+
+def assemble_final_mp4(
+    frames: list[Image.Image],
+    fps: int,
+    audio_wav_path: str | None,
+    out_mp4_path: str,
+    *,
+    video_path: str | None = None,
+) -> str:
+    temp_video = video_path
+    if not temp_video:
+        temp_video = f"/tmp/ltx_commercial_tmp_{uuid.uuid4().hex}.mp4"
+        _write_commercial_mp4_to_path(frames, fps, temp_video)
+    if audio_wav_path and _ffmpeg_available():
+        try:
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                temp_video,
+                "-i",
+                audio_wav_path,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-profile:v",
+                "baseline",
+                "-level",
+                "3.1",
+                "-crf",
+                "18",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                out_mp4_path,
+            ]
+            subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+            return out_mp4_path
+        except Exception:
+            LOGGER.exception("Failed to mux final mp4; using video-only output.")
+    elif audio_wav_path and not _ffmpeg_available():
+        LOGGER.warning("ffmpeg unavailable; output mp4 will be video-only.")
+    if temp_video != out_mp4_path:
+        try:
+            os.replace(temp_video, out_mp4_path)
+        except OSError:
+            shutil.copyfile(temp_video, out_mp4_path)
+    return out_mp4_path
 
 
 def _match_exposure(anchor: Image.Image, frame: Image.Image) -> Image.Image:
@@ -2984,54 +3037,13 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 if ordered_chunks:
                     _concat_mp4_chunks(ordered_chunks, video_concat, state.fps)
                     audio_path = _concat_wav_paths(state.audio_wav_chunks)
-                    if _ffmpeg_available():
-                        if audio_path:
-                            cmd = [
-                                "ffmpeg",
-                                "-y",
-                                "-i",
-                                video_concat,
-                                "-i",
-                                audio_path,
-                                "-c:v",
-                                "libx264",
-                                "-pix_fmt",
-                                "yuv420p",
-                                "-profile:v",
-                                "baseline",
-                                "-level",
-                                "3.1",
-                                "-crf",
-                                "18",
-                                "-c:a",
-                                "aac",
-                                "-b:a",
-                                "192k",
-                                "-shortest",
-                                final_path,
-                            ]
-                        else:
-                            cmd = [
-                                "ffmpeg",
-                                "-y",
-                                "-i",
-                                video_concat,
-                                "-c:v",
-                                "libx264",
-                                "-pix_fmt",
-                                "yuv420p",
-                                "-profile:v",
-                                "baseline",
-                                "-level",
-                                "3.1",
-                                "-crf",
-                                "18",
-                                "-an",
-                                final_path,
-                            ]
-                        subprocess.run(cmd, capture_output=True, check=False, timeout=300)
-                    else:
-                        final_path = video_concat
+                    final_path = assemble_final_mp4(
+                        [],
+                        state.fps,
+                        audio_path,
+                        final_path,
+                        video_path=video_concat,
+                    )
                     _store_commercial_mp4(final_path, stream_id)
                     for path in ordered_chunks:
                         try:
@@ -3201,54 +3213,13 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 else:
                     _concat_mp4_chunks(ordered_chunks, video_concat, state.fps)
                     audio_path = _concat_wav_paths(state.audio_wav_chunks)
-                    if _ffmpeg_available():
-                        if audio_path:
-                            cmd = [
-                                "ffmpeg",
-                                "-y",
-                                "-i",
-                                video_concat,
-                                "-i",
-                                audio_path,
-                                "-c:v",
-                                "libx264",
-                                "-pix_fmt",
-                                "yuv420p",
-                                "-profile:v",
-                                "baseline",
-                                "-level",
-                                "3.1",
-                                "-crf",
-                                "18",
-                                "-c:a",
-                                "aac",
-                                "-b:a",
-                                "192k",
-                                "-shortest",
-                                final_path,
-                            ]
-                        else:
-                            cmd = [
-                                "ffmpeg",
-                                "-y",
-                                "-i",
-                                video_concat,
-                                "-c:v",
-                                "libx264",
-                                "-pix_fmt",
-                                "yuv420p",
-                                "-profile:v",
-                                "baseline",
-                                "-level",
-                                "3.1",
-                                "-crf",
-                                "18",
-                                "-an",
-                                final_path,
-                            ]
-                        subprocess.run(cmd, capture_output=True, check=False, timeout=300)
-                    else:
-                        final_path = video_concat
+                    final_path = assemble_final_mp4(
+                        [],
+                        state.fps,
+                        audio_path,
+                        final_path,
+                        video_path=video_concat,
+                    )
                     _store_commercial_mp4(final_path, stream_id)
                 for path in ordered_chunks:
                     try:
