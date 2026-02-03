@@ -151,6 +151,7 @@ class CommercialState:
     seed: int
     prompt: str
     negative_prompt: str
+    pipeline_mode: str
     stage_width: int
     stage_height: int
     num_frames: int
@@ -168,7 +169,7 @@ class CommercialState:
     last_frame: Image.Image | None = None
     last_output_path: str | None = None
     video_chunks: list[str] = field(default_factory=list)
-    audio_chunks: list[bytes] = field(default_factory=list)
+    audio_wav_chunks: list[bytes] = field(default_factory=list)
     last_audio_ts: float = 0.0
     target_seconds: float = 35.0
     frames_per_chunk: int = 73
@@ -594,8 +595,9 @@ def _instantiate_pipeline(pipe_cls: type, kwargs: dict[str, object], *, output_m
     return factory(**filtered)
 
 
-def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
-    cache_key = f"pipelines:{output_mode}:{device}"
+def _load_pipelines_pipeline(output_mode: str, device: str = "cuda", *, pipeline_variant: str | None = None) -> object:
+    variant = (pipeline_variant or os.getenv("LTX2_PIPELINE_VARIANT", "distilled")).strip().lower()
+    cache_key = f"pipelines:{output_mode}:{device}:{variant}"
     with _PIPELINE_LOCK:
         if cache_key in _PIPELINES:
             return _PIPELINES[cache_key]
@@ -605,6 +607,51 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
         enable_fp8 = os.getenv("LTX2_ENABLE_FP8", "1").lower() in {"1", "true", "yes", "on"}
 
         pipe_cls = DistilledPipeline
+        if variant == "full":
+            candidates = [
+                ("ltx_pipelines.pipeline", "Pipeline"),
+                ("ltx_pipelines.video", "VideoPipeline"),
+                ("ltx_pipelines.standard", "StandardPipeline"),
+            ]
+            for module_name, class_name in candidates:
+                try:
+                    module = __import__(module_name, fromlist=[class_name])
+                    pipe_cls = getattr(module, class_name)
+                    LOGGER.info("Using full pipeline variant: %s.%s", module_name, class_name)
+                    break
+                except Exception:
+                    continue
+            if pipe_cls is DistilledPipeline:
+                try:
+                    import importlib
+                    import pkgutil
+                    import ltx_pipelines  # type: ignore
+                    import inspect as _inspect
+                    for mod in pkgutil.iter_modules(ltx_pipelines.__path__, ltx_pipelines.__name__ + "."):
+                        try:
+                            module = importlib.import_module(mod.name)
+                        except Exception:
+                            continue
+                        for _, obj in _inspect.getmembers(module, _inspect.isclass):
+                            if not obj.__name__.endswith("Pipeline"):
+                                continue
+                            if not obj.__module__.startswith("ltx_pipelines"):
+                                continue
+                            try:
+                                sig = _inspect.signature(obj.__call__)
+                            except Exception:
+                                continue
+                            params = set(sig.parameters.keys())
+                            if any(name in params for name in ("num_inference_steps", "steps", "sampler_name", "sampler")):
+                                pipe_cls = obj
+                                LOGGER.info("Using discovered full pipeline: %s.%s", obj.__module__, obj.__name__)
+                                raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
+            if pipe_cls is DistilledPipeline:
+                LOGGER.warning("Full pipeline variant requested but not available; falling back to DistilledPipeline.")
         init_kwargs = {
             "checkpoint_path": artifacts.checkpoint_path,
             "spatial_upsampler_path": artifacts.spatial_upsampler_path,
@@ -614,7 +661,8 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
             "fp8transformer": enable_fp8,
         }
 
-        LOGGER.info("Using DistilledPipeline (fast inference)")
+        if pipe_cls is DistilledPipeline:
+            LOGGER.info("Using DistilledPipeline (fast inference)")
         pipe = _instantiate_pipeline(pipe_cls, init_kwargs, output_mode=output_mode)
         if _env_bool("LTX2_PERSIST_MODELS", True) and hasattr(pipe, "model_ledger"):
             _enable_model_caching(pipe.model_ledger)
@@ -625,6 +673,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
         if hasattr(pipe, "eval"):
             pipe.eval()
         call_signature = inspect.signature(pipe.__call__)
+        param_names = sorted(call_signature.parameters.keys())
         supports_output_path = any(name in call_signature.parameters for name in ("output_path", "output"))
         required_params = [
             name
@@ -633,6 +682,7 @@ def _load_pipelines_pipeline(output_mode: str, device: str = "cuda") -> object:
             and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
         ]
         LOGGER.info("LTX-2 pipeline call signature: %s", call_signature)
+        LOGGER.info("LTX-2 pipeline params=%s", param_names)
         LOGGER.info("LTX-2 pipeline supports output_path=%s", supports_output_path)
         LOGGER.info("LTX-2 pipeline required params=%s", required_params)
 
@@ -697,11 +747,11 @@ def _load_diffusers_pipeline(output_mode: str, device: str = "cuda") -> object:
         return pipe
 
 
-def _load_pipeline(output_mode: str, device: str = "cuda") -> object:
+def _load_pipeline(output_mode: str, device: str = "cuda", *, pipeline_variant: str | None = None) -> object:
     backend = _get_backend()
     if backend == "diffusers":
         return _load_diffusers_pipeline(output_mode, device=device)
-    return _load_pipelines_pipeline(output_mode, device=device)
+    return _load_pipelines_pipeline(output_mode, device=device, pipeline_variant=pipeline_variant)
 
 
 def _load_ic_lora_pipeline(device: str = "cuda") -> object:
@@ -971,6 +1021,20 @@ def _write_commercial_mp4_to_path(
             pass
 
 
+def _match_exposure(anchor: Image.Image, frame: Image.Image) -> Image.Image:
+    anchor_arr = np.asarray(anchor).astype(np.float32)
+    frame_arr = np.asarray(frame).astype(np.float32)
+    if anchor_arr.shape != frame_arr.shape:
+        frame_arr = cv2.resize(frame_arr, (anchor_arr.shape[1], anchor_arr.shape[0]), interpolation=cv2.INTER_AREA)
+    anchor_mean = anchor_arr.mean(axis=(0, 1), keepdims=True)
+    anchor_std = anchor_arr.std(axis=(0, 1), keepdims=True) + 1e-6
+    frame_mean = frame_arr.mean(axis=(0, 1), keepdims=True)
+    frame_std = frame_arr.std(axis=(0, 1), keepdims=True) + 1e-6
+    matched = (frame_arr - frame_mean) / frame_std * anchor_std + anchor_mean
+    matched = np.clip(matched, 0, 255).astype(np.uint8)
+    return Image.fromarray(matched)
+
+
 def _concat_commercial_chunks(paths: list[str], output_path: str, fps: int) -> None:
     valid_paths = [p for p in paths if p and os.path.exists(p)]
     if not valid_paths:
@@ -1150,6 +1214,95 @@ def _concat_mp4_chunks(video_paths: list[str], out_path: str, fps: int) -> bool:
             pass
 
 
+def _concat_mp4_chunks_with_audio(video_paths: list[str], out_path: str, fps: int) -> bool:
+    if not _ffmpeg_available():
+        return False
+    valid_paths = [p for p in video_paths if p and os.path.exists(p)]
+    if not valid_paths:
+        return False
+    list_path = f"/tmp/ltx_commercial_concat_{uuid.uuid4().hex}.txt"
+    try:
+        with open(list_path, "w", encoding="utf-8") as handle:
+            for path in valid_paths:
+                handle.write(f"file '{path}'\n")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-r",
+            str(float(fps)),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            out_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+        if result.returncode != 0:
+            LOGGER.warning("ffmpeg concat av failed: %s", result.stderr.decode(errors="ignore").strip())
+            return False
+        return True
+    except Exception:
+        LOGGER.exception("Failed to concat commercial chunks with audio.")
+        return False
+    finally:
+        try:
+            os.remove(list_path)
+        except OSError:
+            pass
+
+
+def _extract_wav_from_mp4(video_path: str, sample_rate: int) -> bytes | None:
+    if not _ffmpeg_available():
+        return None
+    temp_path = f"/tmp/ltx_commercial_audio_{uuid.uuid4().hex}.wav"
+    try:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(int(sample_rate)),
+            "-ac",
+            "2",
+            temp_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=120)
+        if result.returncode != 0:
+            LOGGER.warning("ffmpeg audio extract failed: %s", result.stderr.decode(errors="ignore").strip())
+            return None
+        with open(temp_path, "rb") as handle:
+            return handle.read()
+    except Exception:
+        LOGGER.exception("Failed to extract wav from mp4.")
+        return None
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+
 def _requires_64_multiple(pipe: object, output_mode: str) -> bool:
     if output_mode == "upscaled":
         return True
@@ -1202,19 +1355,6 @@ def _resolve_commercial_stage_dimensions(config) -> tuple[int, int]:
 
 
 def _resolve_commercial_chunk_settings(config) -> tuple[int, int, int]:
-    explicit_frames = os.getenv("LTX2_NUM_FRAMES")
-    if explicit_frames:
-        try:
-            requested = int(float(explicit_frames))
-        except ValueError:
-            LOGGER.warning("Invalid LTX2_NUM_FRAMES=%s; ignoring.", explicit_frames)
-            requested = 0
-        if requested > 0:
-            num_frames = _adjust_num_frames(requested)
-            stage_width, stage_height = _resolve_commercial_stage_dimensions(config)
-            LOGGER.info("Chunk frames override: LTX2_NUM_FRAMES=%s -> %s frames", requested, num_frames)
-            return stage_width, stage_height, num_frames
-
     target_seconds = os.getenv("LTX2_TARGET_CHUNK_SECONDS")
     if target_seconds:
         try:
@@ -1368,8 +1508,6 @@ def _build_pipeline_kwargs(
     params = signature.parameters
     param_names = set(params.keys())
     kwargs: dict[str, object] = {}
-    is_distilled = isinstance(pipe, DistilledPipeline)
-
     if not any(name in param_names for name in ("prompt", "text")):
         raise RuntimeError("LTX-2 pipeline does not accept a prompt argument.")
     _assign_first_present(param_names, kwargs, prompt, ["prompt", "text"])
@@ -1379,8 +1517,7 @@ def _build_pipeline_kwargs(
     _assign_first_present(param_names, kwargs, num_frames, ["num_frames", "video_length", "frames"])
     _assign_first_present(param_names, kwargs, fps, ["fps", "frame_rate"])
     _assign_first_present(param_names, kwargs, guidance_scale, ["guidance_scale", "cfg_scale", "cfg_guidance_scale"])
-    if not is_distilled:
-        _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
+    _assign_first_present(param_names, kwargs, num_inference_steps, ["num_inference_steps", "steps"])
     if output_path and any(name in param_names for name in ("output_path", "output")):
         _assign_first_present(param_names, kwargs, output_path, ["output_path", "output"])
 
@@ -1626,6 +1763,58 @@ def _mux_audio_with_video(video_path: str, audio_bytes: bytes, output_path: str)
 
 def _concat_wav_bytes(chunks: list[bytes]) -> str | None:
     if not chunks:
+        return None
+
+
+def _trim_or_pad_wav_to_frames(
+    wav_bytes: bytes,
+    *,
+    fps: int,
+    frames: int,
+    sample_rate: int,
+) -> bytes | None:
+    import io
+    import wave
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as in_wav:
+            params = in_wav.getparams()
+            channels = params.nchannels
+            sampwidth = params.sampwidth
+            framerate = params.framerate
+            if framerate <= 0:
+                framerate = sample_rate
+            raw = in_wav.readframes(in_wav.getnframes())
+        bytes_per_frame = channels * sampwidth
+        if bytes_per_frame <= 0:
+            return None
+        target_frames = int(round(frames * framerate / max(1, fps)))
+        target_bytes = target_frames * bytes_per_frame
+        current_bytes = len(raw)
+        applied = "none"
+        if current_bytes > target_bytes:
+            raw = raw[:target_bytes]
+            applied = "trim"
+        elif current_bytes < target_bytes:
+            raw = raw + (b"\x00" * (target_bytes - current_bytes))
+            applied = "pad"
+        out_buf = io.BytesIO()
+        with wave.open(out_buf, "wb") as out_wav:
+            out_wav.setnchannels(channels)
+            out_wav.setsampwidth(sampwidth)
+            out_wav.setframerate(framerate)
+            out_wav.writeframes(raw)
+        duration = target_frames / max(1, framerate)
+        LOGGER.info(
+            "Commercial audio normalize: frames=%s fps=%s wav_seconds=%.3f expected_seconds=%.3f applied=%s",
+            frames,
+            fps,
+            current_bytes / bytes_per_frame / max(1, framerate),
+            duration,
+            applied,
+        )
+        return out_buf.getvalue()
+    except Exception:
+        LOGGER.exception("Failed to trim/pad commercial wav.")
         return None
     import io
     import wave
@@ -1948,6 +2137,7 @@ def _generate_commercial_video_chunk(
     num_inference_steps: int,
     seed: int | None,
     images: list[tuple[str, int, float]] | None = None,
+    apply_comfy_overrides: bool = True,
 ) -> tuple[list[Image.Image], str | None]:
     _log_vram("commercial_chunk_start")
     if num_frames <= 0:
@@ -1986,7 +2176,31 @@ def _generate_commercial_video_chunk(
         seed=seed,
         output_path=output_path,
         images=images,
+        apply_comfy_overrides=apply_comfy_overrides,
     )
+    frames = int(kwargs.get("num_frames") or 0)
+    frames = max(frames, 9)
+    frames = _adjust_num_frames(frames)
+    if (frames - 1) % 8 != 0:
+        LOGGER.warning("Invalid num_frames=%s; forcing 73", frames)
+        frames = 73
+    kwargs["num_frames"] = frames
+    sampler = kwargs.get("sampler_name") or kwargs.get("sampler") or kwargs.get("scheduler")
+    cfg_value = kwargs.get("cfg_guidance_scale") or kwargs.get("cfg_scale") or kwargs.get("guidance_scale") or guidance_scale
+    steps_value = kwargs.get("num_inference_steps") or kwargs.get("steps")
+    fps_value = kwargs.get("frame_rate") or kwargs.get("fps")
+    LOGGER.info(
+        "Commercial mode kwargs: steps=%s cfg=%.3f sampler=%s num_frames=%s fps=%s",
+        steps_value,
+        cfg_value,
+        sampler,
+        kwargs.get("num_frames"),
+        fps_value,
+    )
+    if steps_value is None:
+        LOGGER.warning("Commercial mode pipeline does not accept steps/num_inference_steps.")
+    if sampler is None:
+        LOGGER.warning("Commercial mode pipeline does not accept sampler/scheduler params.")
     result = _call_ltx_pipeline(pipe, kwargs)
     _store_audio_from_result(result)
     _log_vram("commercial_chunk_end")
@@ -2112,9 +2326,9 @@ def _generate_diffusers_chunk(
         yield frame
 
 
-def _get_pipelines_pipe_or_status(config) -> object | None:
+def _get_pipelines_pipe_or_status(config, *, pipeline_variant: str | None = None) -> object | None:
     try:
-        return _load_pipeline(getattr(config, "output_mode", "native"))
+        return _load_pipeline(getattr(config, "output_mode", "native"), pipeline_variant=pipeline_variant)
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Failed to load pipelines backend: %s", exc)
         return None
@@ -2324,10 +2538,10 @@ def _get_or_create_commercial_state(
         prompt = getattr(config, "prompt", "")
         negative_prompt = _build_negative_prompt(prompt, getattr(config, "negative_prompt", "") or "")
         seed = config.seed if getattr(config, "seed", None) is not None else _get_or_create_commercial_seed(cancel_event, stream_id)
-        guidance_scale = 3.0 + float(getattr(config, "dream_strength", 0.0)) * 5.0
-        num_inference_steps = int(10 + float(getattr(config, "motion", 0.0)) * 10)
-        chain_strength = _env_float("LTX2_CHAIN_STRENGTH", 0.35)
-        chain_frames = _clamp_env_int("LTX2_CHAIN_FRAMES", 3, min_value=1, max_value=8)
+        guidance_scale = _env_float("LTX2_COMMERCIAL_CFG", 4.0)
+        num_inference_steps = _env_int_clamped("LTX2_COMMERCIAL_STEPS", 20, min_value=1, max_value=200)
+        chain_strength = _env_float("LTX2_COMMERCIAL_CHAIN_STRENGTH", 0.20)
+        chain_frames = _env_int_clamped("LTX2_COMMERCIAL_CHAIN_FRAMES", 1, min_value=1, max_value=8)
         drop_prefix = _clamp_env_int("LTX2_DROP_PREFIX_FRAMES", 0, min_value=0, max_value=8)
         reset_interval = _env_int_clamped("LTX2_COMMERCIAL_RESET_INTERVAL_CHUNKS", 8, min_value=0, max_value=10000)
         blend_frames = _env_int_clamped("LTX2_COMMERCIAL_BLEND_FRAMES", 3, min_value=0, max_value=16)
@@ -2344,6 +2558,7 @@ def _get_or_create_commercial_state(
             seed=seed,
             prompt=prompt,
             negative_prompt=negative_prompt,
+            pipeline_mode=os.getenv("LTX2_COMMERCIAL_PIPELINE", "distilled").strip().lower() or "distilled",
             stage_width=stage_width,
             stage_height=stage_height,
             num_frames=frames_per_chunk,
@@ -2361,7 +2576,7 @@ def _get_or_create_commercial_state(
             total_chunks=num_chunks,
         )
         state.video_chunks = []
-        state.audio_chunks = []
+        state.audio_wav_chunks = []
         _COMMERCIAL_STATE[key] = state
         LOGGER.info(
             "Commercial mode start: stream_id=%s generation_mode=commercial_lock seed=%s steps=%s cfg=%.3f reset_interval=%s target_seconds=%.1f effective_seconds=%.2f frames_per_chunk=%s total_chunks=%s",
@@ -2525,7 +2740,10 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             LOGGER.exception("Continuity Studio diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
-    pipe = _get_pipelines_pipe_or_status(config)
+    pipeline_variant = os.getenv("LTX2_COMMERCIAL_PIPELINE_VARIANT", "").strip().lower()
+    if chunk_index == 1:
+        LOGGER.info("Commercial pipeline variant=%s", pipeline_variant or "default")
+    pipe = _get_pipelines_pipe_or_status(config, pipeline_variant=pipeline_variant or None)
     if pipe is None:
         return [render_status_frame("LTX-2 load failed", config.width, config.height)]
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
@@ -2598,6 +2816,39 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
     if is_commercial_done(cancel_event, stream_id):
         return []
     state = _get_or_create_commercial_state(config, cancel_event, stream_id)
+    env_pipeline = os.getenv("LTX2_COMMERCIAL_PIPELINE")
+    if env_pipeline:
+        state.pipeline_mode = env_pipeline.strip().lower() or state.pipeline_mode
+    commercial_pipeline = (state.pipeline_mode or "distilled").strip().lower()
+    if commercial_pipeline not in {"distilled", "comfy_equivalent"}:
+        LOGGER.warning("Unknown LTX2_COMMERCIAL_PIPELINE=%s; defaulting to distilled", commercial_pipeline)
+        commercial_pipeline = "distilled"
+        state.pipeline_mode = "distilled"
+    if state.chunk_index == 0:
+        LOGGER.info("Commercial pipeline mode: %s", commercial_pipeline)
+    use_comfy = _env_bool("LTX2_COMMERCIAL_USE_COMFY_PRESET", True)
+    exposure_lock = _env_bool("LTX2_COMMERCIAL_EXPOSURE_LOCK", True)
+    env_overrides: dict[str, str | None] = {}
+
+    def _set_env(key: str, value: str | None) -> None:
+        if key not in env_overrides:
+            env_overrides[key] = os.getenv(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+    if use_comfy:
+        _set_env("LTX2_COMFY_PRESET", "1")
+        _set_env("LTX2_SAMPLER_NAME", os.getenv("LTX2_COMMERCIAL_SAMPLER", "euler_ancestral"))
+        _set_env("LTX2_STAGE2_ENABLE", os.getenv("LTX2_COMMERCIAL_STAGE2_ENABLE", "1"))
+        _set_env("LTX2_STAGE2_CFG", os.getenv("LTX2_STAGE2_CFG", "1.0"))
+        _set_env("LTX2_STAGE2_MANUAL_SIGMAS", os.getenv("LTX2_STAGE2_MANUAL_SIGMAS", "0.909375,0.725,0.421875,0.0"))
+    if _env_bool("LTX2_COMMERCIAL_DISABLE_PROMPT_DRIFT", True):
+        _set_env("LTX2_PROMPT_DRIFT", "0")
+    if _env_bool("LTX2_COMMERCIAL_USE_DEV_CHECKPOINT", False):
+        _set_env("LTX2_USE_DISTILLED", "0")
+        _set_env("LTX2_FP8_FILE", os.getenv("LTX2_COMMERCIAL_DEV_FP8_FILE", "ltx-2-19b-dev-fp8.safetensors"))
     if state.chunks_generated >= state.total_chunks:
         _mark_commercial_done(cancel_event, stream_id)
         LOGGER.info(
@@ -2639,6 +2890,9 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
             True,
         )
 
+    if commercial_pipeline == "comfy_equivalent" and backend == "diffusers":
+        return [render_status_frame("Comfy-equivalent requires pipelines backend", config.width, config.height)]
+
     if backend == "diffusers":
         pipe = _get_diffusers_pipe_or_status(config)
         if pipe is None:
@@ -2663,8 +2917,11 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 frames = frames[state.drop_prefix:]
             if reset_occurred:
                 frames = _apply_commercial_blend(last_frame_for_blend, frames, state.blend_frames)
-            if frames and state.anchor_frame is None:
-                state.anchor_frame = frames[0].copy()
+            if frames:
+                if state.anchor_frame is None:
+                    state.anchor_frame = frames[0].copy()
+                if exposure_lock and state.anchor_frame is not None:
+                    frames = [_match_exposure(state.anchor_frame, frame) for frame in frames]
             if frames:
                 _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
                 state.last_frame = frames[-1].copy()
@@ -2680,8 +2937,16 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 state.last_output_path = chunk_path
                 audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
                 if audio_bytes and audio_ts > state.last_audio_ts:
-                    state.audio_chunks.append(audio_bytes)
-                    state.last_audio_ts = audio_ts
+                    sample_rate = int(float(os.getenv("LTX2_AUDIO_SAMPLE_RATE", "48000")))
+                    fixed = _trim_or_pad_wav_to_frames(
+                        audio_bytes,
+                        fps=state.fps,
+                        frames=len(frames),
+                        sample_rate=sample_rate,
+                    )
+                    if fixed:
+                        state.audio_wav_chunks.append(fixed)
+                        state.last_audio_ts = audio_ts
             state.chunks_generated += 1
             if state.chunks_generated >= state.total_chunks:
                 _mark_commercial_done(cancel_event, stream_id)
@@ -2689,7 +2954,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 video_concat = f"/tmp/ltx_commercial_{stream_id}_video.mp4"
                 if state.video_chunks:
                     _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
-                    audio_path = _concat_wav_bytes(state.audio_chunks)
+                    audio_path = _concat_wav_bytes(state.audio_wav_chunks)
                     if _ffmpeg_available():
                         if audio_path:
                             cmd = [
@@ -2745,7 +3010,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                         except OSError:
                             pass
                     state.video_chunks.clear()
-                    state.audio_chunks.clear()
+                    state.audio_wav_chunks.clear()
                     if audio_path:
                         try:
                             os.remove(audio_path)
@@ -2765,9 +3030,21 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
             LOGGER.exception("Continuity Studio diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
-    pipe = _get_pipelines_pipe_or_status(config)
-    if pipe is None:
-        return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    pipe = None
+    if commercial_pipeline != "comfy_equivalent":
+        pipe = _get_pipelines_pipe_or_status(config)
+        if pipe is None:
+            return [render_status_frame("LTX-2 load failed", config.width, config.height)]
+    if chunk_index == 1:
+        try:
+            checkpoint_path = _resolve_checkpoint_path()
+        except Exception as exc:  # noqa: BLE001
+            checkpoint_path = f"unresolved ({exc})"
+        LOGGER.info(
+            "Commercial mode checkpoint: stream_id=%s checkpoint_path=%s",
+            stream_id,
+            checkpoint_path,
+        )
     images: list[tuple[str, int, float]] | None = None
     temp_paths: list[str] = []
     try:
@@ -2781,22 +3058,61 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 carry_path = _write_temp_pil(carry)
                 temp_paths.append(carry_path)
                 images = [(carry_path, i, state.chain_strength) for i in range(state.chain_frames)]
-        frames, output_path = _generate_commercial_video_chunk(
-            pipe,
-            stream_id=stream_id,
-            chunk_index=chunk_index,
-            output_mode=state.output_mode,
-            prompt=state.prompt,
-            negative_prompt=state.negative_prompt,
-            width=state.stage_width,
-            height=state.stage_height,
-            num_frames=chunk_frames,
-            fps=state.fps,
-            guidance_scale=state.guidance_scale,
-            num_inference_steps=state.num_inference_steps,
-            seed=state.seed,
-            images=images,
-        )
+        if use_comfy:
+            os.environ["LTX2_COMFY_PRESET"] = "1"
+        if commercial_pipeline == "comfy_equivalent":
+            try:
+                from comfy_equivalent import render_comfy_equivalent_mp4  # type: ignore
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Comfy-equivalent module import failed: %s", exc)
+                return [render_status_frame("Comfy-equivalent unavailable", config.width, config.height)]
+
+            try:
+                artifacts = _resolve_artifacts(state.output_mode)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Comfy-equivalent artifacts resolve failed: %s", exc)
+                return [render_status_frame("Model assets missing", config.width, config.height)]
+
+            try:
+                checkpoint_path = _resolve_checkpoint_path()
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Comfy-equivalent checkpoint resolve failed: %s", exc)
+                return [render_status_frame("Checkpoint missing", config.width, config.height)]
+
+            chunk_path = f"/tmp/ltx_commercial_tmp_{uuid.uuid4().hex}.mp4"
+            output_path = render_comfy_equivalent_mp4(
+                prompt=state.prompt,
+                negative_prompt=state.negative_prompt,
+                width=int(getattr(config, "width", state.stage_width)),
+                height=int(getattr(config, "height", state.stage_height)),
+                fps=state.fps,
+                num_frames=chunk_frames,
+                ckpt_path=str(checkpoint_path),
+                gemma_root=str(artifacts.gemma_root),
+                distilled_lora_path=str(artifacts.distilled_lora_path or ""),
+                distilled_lora_strength=float(getattr(artifacts, "distilled_lora_strength", 1.0)),
+                spatial_upscaler_path=str(artifacts.spatial_upsampler_path or ""),
+                out_mp4_path=chunk_path,
+            )
+            frames = _decode_video_to_frames(output_path)
+        else:
+            frames, output_path = _generate_commercial_video_chunk(
+                pipe,
+                stream_id=stream_id,
+                chunk_index=chunk_index,
+                output_mode=state.output_mode,
+                prompt=state.prompt,
+                negative_prompt=state.negative_prompt,
+                width=state.stage_width,
+                height=state.stage_height,
+                num_frames=chunk_frames,
+                fps=state.fps,
+                guidance_scale=state.guidance_scale,
+                num_inference_steps=state.num_inference_steps,
+                seed=state.seed,
+                images=images,
+                apply_comfy_overrides=use_comfy,
+            )
         if output_path:
             _store_commercial_chunk_path(output_path, stream_id, chunk_index, state)
         else:
@@ -2813,80 +3129,112 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
             frames = frames[state.drop_prefix:]
         if reset_occurred:
             frames = _apply_commercial_blend(last_frame_for_blend, frames, state.blend_frames)
-        if frames and state.anchor_frame is None:
-            state.anchor_frame = frames[0].copy()
+        if frames:
+            if state.anchor_frame is None:
+                state.anchor_frame = frames[0].copy()
+            if exposure_lock and state.anchor_frame is not None:
+                frames = [_match_exposure(state.anchor_frame, frame) for frame in frames]
         if frames:
             _set_chain_frame("commercial_lock", cancel_event, frames[-1], stream_id)
             state.last_frame = frames[-1].copy()
             state.frames_generated += len(frames)
-            audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
-            if audio_bytes and audio_ts > state.last_audio_ts:
-                state.audio_chunks.append(audio_bytes)
-                state.last_audio_ts = audio_ts
+            sample_rate = int(float(os.getenv("LTX2_AUDIO_SAMPLE_RATE", "48000")))
+            if commercial_pipeline == "comfy_equivalent":
+                if state.last_output_path:
+                    audio_bytes = _extract_wav_from_mp4(state.last_output_path, sample_rate)
+                    if audio_bytes:
+                        fixed = _trim_or_pad_wav_to_frames(
+                            audio_bytes,
+                            fps=state.fps,
+                            frames=len(frames),
+                            sample_rate=sample_rate,
+                        )
+                        if fixed:
+                            state.audio_wav_chunks.append(fixed)
+            else:
+                audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
+                if audio_bytes and audio_ts > state.last_audio_ts:
+                    fixed = _trim_or_pad_wav_to_frames(
+                        audio_bytes,
+                        fps=state.fps,
+                        frames=len(frames),
+                        sample_rate=sample_rate,
+                    )
+                    if fixed:
+                        state.audio_wav_chunks.append(fixed)
+                        state.last_audio_ts = audio_ts
         state.chunks_generated += 1
         if state.chunks_generated >= state.total_chunks:
             _mark_commercial_done(cancel_event, stream_id)
             final_path = f"/tmp/ltx_commercial_{stream_id}.mp4"
             video_concat = f"/tmp/ltx_commercial_{stream_id}_video.mp4"
+            audio_path = None
             if state.video_chunks:
-                _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
-                audio_path = _concat_wav_bytes(state.audio_chunks)
-                if _ffmpeg_available():
-                    if audio_path:
-                        cmd = [
-                            "ffmpeg",
-                            "-y",
-                            "-i",
-                            video_concat,
-                            "-i",
-                            audio_path,
-                            "-c:v",
-                            "libx264",
-                            "-pix_fmt",
-                            "yuv420p",
-                            "-profile:v",
-                            "baseline",
-                            "-level",
-                            "3.1",
-                            "-crf",
-                            "18",
-                            "-c:a",
-                            "aac",
-                            "-b:a",
-                            "192k",
-                            "-shortest",
-                            final_path,
-                        ]
+                if commercial_pipeline == "comfy_equivalent" and not state.audio_wav_chunks:
+                    if _concat_mp4_chunks_with_audio(state.video_chunks, final_path, state.fps):
+                        _store_commercial_mp4(final_path, stream_id)
                     else:
-                        cmd = [
-                            "ffmpeg",
-                            "-y",
-                            "-i",
-                            video_concat,
-                            "-c:v",
-                            "libx264",
-                            "-pix_fmt",
-                            "yuv420p",
-                            "-profile:v",
-                            "baseline",
-                            "-level",
-                            "3.1",
-                            "-crf",
-                            "18",
-                            "-an",
-                            final_path,
-                        ]
-                    subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+                        _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
+                        _store_commercial_mp4(video_concat, stream_id)
                 else:
-                    final_path = video_concat
-                _store_commercial_mp4(final_path, stream_id)
+                    _concat_mp4_chunks(state.video_chunks, video_concat, state.fps)
+                    audio_path = _concat_wav_bytes(state.audio_wav_chunks)
+                    if _ffmpeg_available():
+                        if audio_path:
+                            cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_concat,
+                                "-i",
+                                audio_path,
+                                "-c:v",
+                                "libx264",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-profile:v",
+                                "baseline",
+                                "-level",
+                                "3.1",
+                                "-crf",
+                                "18",
+                                "-c:a",
+                                "aac",
+                                "-b:a",
+                                "192k",
+                                "-shortest",
+                                final_path,
+                            ]
+                        else:
+                            cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                video_concat,
+                                "-c:v",
+                                "libx264",
+                                "-pix_fmt",
+                                "yuv420p",
+                                "-profile:v",
+                                "baseline",
+                                "-level",
+                                "3.1",
+                                "-crf",
+                                "18",
+                                "-an",
+                                final_path,
+                            ]
+                        subprocess.run(cmd, capture_output=True, check=False, timeout=300)
+                    else:
+                        final_path = video_concat
+                    _store_commercial_mp4(final_path, stream_id)
                 for path in state.video_chunks:
                     try:
                         os.remove(path)
                     except OSError:
                         pass
                 state.video_chunks.clear()
-                state.audio_chunks.clear()
+                state.audio_wav_chunks.clear()
                 if audio_path:
                     try:
                         os.remove(audio_path)
@@ -2906,6 +3254,11 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
         LOGGER.exception("Continuity Studio generation error: %s", exc)
         return [render_status_frame("Generation error", config.width, config.height)]
     finally:
+        for key, prior in env_overrides.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
         for path in temp_paths:
             try:
                 os.remove(path)

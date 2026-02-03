@@ -16,7 +16,7 @@ RUN apt-get update \
 RUN mkdir -p /models
 WORKDIR /app
 
-COPY requirements.txt README.md app.py ltx2_backend.py settings_loader.py settings.conf ./
+COPY requirements.txt README.md app.py ltx2_backend.py settings_loader.py settings.conf comfy_equivalent.py ./
 COPY scripts/patch_ltx2_cache_models.py /app/patch_ltx2_cache_models.py
 COPY scripts/patch_ltx2_distilled_cfg.py /app/patch_ltx2_distilled_cfg.py
 COPY static ./static

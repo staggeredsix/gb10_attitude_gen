@@ -8,6 +8,7 @@ HUB_CACHE_DIR="${HF_HOME_DIR}/hub"
 
 LTX2_MODEL_ID="${LTX2_MODEL_ID:-Lightricks/LTX-2}"
 LTX2_FP4_FILE="${LTX2_FP4_FILE:-ltx-2-19b-dev-fp4.safetensors}"
+LTX2_DEV_FP8_FILE="${LTX2_DEV_FP8_FILE:-ltx-2-19b-dev-fp8.safetensors}"
 LTX2_SPATIAL_UPSCALER_FILE="${LTX2_SPATIAL_UPSCALER_FILE:-ltx-2-spatial-upscaler-x2-1.0.safetensors}"
 LTX2_TEMPORAL_UPSCALER_FILE="${LTX2_TEMPORAL_UPSCALER_FILE:-ltx-2-temporal-upscaler-x2-1.0.safetensors}"
 LTX2_USE_DISTILLED="${LTX2_USE_DISTILLED:-1}"
@@ -23,7 +24,7 @@ mkdir -p "${HUB_CACHE_DIR}"
 
 export HF_HOME="${HF_HOME_DIR}"
 export HUGGINGFACE_HUB_CACHE="${HUB_CACHE_DIR}"
-export LTX2_MODEL_ID LTX2_FP4_FILE LTX2_SPATIAL_UPSCALER_FILE LTX2_TEMPORAL_UPSCALER_FILE
+export LTX2_MODEL_ID LTX2_FP4_FILE LTX2_DEV_FP8_FILE LTX2_SPATIAL_UPSCALER_FILE LTX2_TEMPORAL_UPSCALER_FILE
 export LTX2_USE_DISTILLED LTX2_DISTILLED_FP8_FILE LTX2_DISTILLED_FP4_FILE LTX2_DISTILLED_LORA_FILE
 export GEMMA_MODEL_ID GEMMA_DIR
 
@@ -33,6 +34,7 @@ Usage: ./download_model.sh [ltx2|gemma|all]
 Environment overrides:
   LTX2_MODEL_ID (default: Lightricks/LTX-2)
   LTX2_FP4_FILE (default: ltx-2-19b-dev-fp4.safetensors)
+  LTX2_DEV_FP8_FILE (default: ltx-2-19b-dev-fp8.safetensors)
   LTX2_USE_DISTILLED (default: 1)
   LTX2_DISTILLED_FP8_FILE (default: ltx-2-19b-distilled-fp8.safetensors)
   LTX2_DISTILLED_FP4_FILE (default: ltx-2-19b-distilled-fp4.safetensors)
@@ -61,6 +63,7 @@ cache_dir = os.environ["HUGGINGFACE_HUB_CACHE"]
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
 fp4 = os.environ["LTX2_FP4_FILE"]
+dev_fp8 = os.environ["LTX2_DEV_FP8_FILE"]
 use_distilled = os.environ.get("LTX2_USE_DISTILLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 distilled_fp8 = os.environ["LTX2_DISTILLED_FP8_FILE"]
 distilled_fp4 = os.environ["LTX2_DISTILLED_FP4_FILE"]
@@ -85,6 +88,7 @@ allow_patterns = [
     "**/model.safetensors",
     "**/pytorch_model.bin",
     "**/*.safetensors",
+    dev_fp8,
     fp4,
     distilled_fp8,
     distilled_fp4,
@@ -123,6 +127,7 @@ if missing_weights:
 
 paths = {
     "snapshot_dir": snapshot_dir,
+    "dev_fp8": os.path.join(snapshot_dir, dev_fp8),
     "fp4": os.path.join(snapshot_dir, fp4),
     "distilled_fp8": os.path.join(snapshot_dir, distilled_fp8),
     "distilled_fp4": os.path.join(snapshot_dir, distilled_fp4),
@@ -134,6 +139,8 @@ paths = {
 mode = "distilled" if use_distilled else "dev"
 missing_required = []
 missing_optional = []
+if not os.path.isfile(paths["dev_fp8"]):
+    missing_required.append("dev_fp8")
 if use_distilled:
     if not os.path.isfile(paths["distilled_fp8"]):
         missing_required.append("distilled_fp8")
@@ -163,6 +170,7 @@ if missing_optional:
 print("OK:")
 print(f"  snapshot_dir: {paths['snapshot_dir']}")
 print(f"  mode:         {mode}")
+print(f"  dev_fp8:      {paths['dev_fp8']}")
 if use_distilled:
     print(f"  checkpoint:   {paths['distilled_fp8']}")
     print(f"  distilled_lora: {paths['distilled_lora']}")
@@ -174,6 +182,20 @@ temporal_ok = os.path.isfile(paths["temporal_upscaler"])
 print(f"  spatial:      {paths['spatial_upscaler']}")
 print(f"  temporal:     {paths['temporal_upscaler']}")
 print(f"  upscalers:   spatial {'OK' if spatial_ok else 'MISSING'}  temporal {'OK' if temporal_ok else 'MISSING'}")
+
+target_dir = os.path.join(os.path.dirname(snapshot_dir), "ltx2")
+os.makedirs(target_dir, exist_ok=True)
+for key in ("dev_fp8", "distilled_fp8", "distilled_lora"):
+    src = paths.get(key)
+    if src and os.path.isfile(src):
+        dst = os.path.join(target_dir, os.path.basename(src))
+        if not os.path.isfile(dst):
+            try:
+                import shutil
+                shutil.copyfile(src, dst)
+                print(f"  copied: {src} -> {dst}")
+            except Exception as exc:
+                print(f"  warning: failed to copy {src} -> {dst}: {exc}", file=sys.stderr)
 PY
   echo "Done."
   echo "Cache: ${HUGGINGFACE_HUB_CACHE}"

@@ -1160,6 +1160,7 @@
 
       async function pollAudioStatus() {
         if (!audioEnabled) return;
+        if (modeSelect.value === "commercial_lock") return;
         const streamId = parseInt(audioStreamSelect.value || "0", 10) || 0;
         try {
           const response = await fetch(`/audio/status?stream=${streamId}`);
