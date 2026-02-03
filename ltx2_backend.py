@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import os
 import pathlib
 import random
@@ -201,6 +202,7 @@ class PipelineAdapter:
         num_inference_steps: int,
         seed: int | None,
         images: list[tuple[str, int, float]] | None,
+        mode: str | None = None,
     ) -> ChunkResult:
         raise NotImplementedError
 
@@ -224,6 +226,7 @@ class DistilledPipelineAdapter(PipelineAdapter):
         num_inference_steps: int,
         seed: int | None,
         images: list[tuple[str, int, float]] | None,
+        mode: str | None = None,
     ) -> ChunkResult:
         pipe = _get_pipelines_pipe_or_status(self._config, pipeline_variant=self._pipeline_variant)
         if pipe is None:
@@ -242,6 +245,7 @@ class DistilledPipelineAdapter(PipelineAdapter):
                 num_inference_steps=num_inference_steps,
                 seed=seed,
                 images=images,
+                mode=mode,
             )
         )
         return ChunkResult(frames=frames)
@@ -265,6 +269,7 @@ class ComfyQualityPipelineAdapter(PipelineAdapter):
         num_inference_steps: int,
         seed: int | None,
         images: list[tuple[str, int, float]] | None,
+        mode: str | None = None,
     ) -> ChunkResult:
         raise NotImplementedError("TODO: implement ComfyQualityPipelineAdapter using vendored LTX-2 primitives.")
 
@@ -319,6 +324,49 @@ def _env_int_clamped(name: str, default: int, *, min_value: int, max_value: int)
         LOGGER.warning("Invalid int for %s=%s; using %s", name, value, default)
         parsed = default
     return max(min_value, min(parsed, max_value))
+
+
+def _clamp_steps(value: int) -> int:
+    return max(1, min(int(value), 200))
+
+
+def _resolve_fever_mood_steps(config, *, realtime: bool) -> int:
+    use_ui_steps = _env_bool("LTX2_USE_UI_STEPS", True)
+    steps_value = getattr(config, "quality_steps", None)
+    if use_ui_steps and steps_value is not None:
+        return _clamp_steps(int(steps_value))
+    num_inference_steps = int(10 + config.motion * 10)
+    if realtime:
+        steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
+        num_inference_steps = min(num_inference_steps, steps_cap)
+    return num_inference_steps
+
+
+def _resolve_pipeline_variant(config, *, default_variant: str | None = None, allow_quality_override: bool = True) -> str | None:
+    forced = os.getenv("FORCE_PIPELINE_VARIANT", "").strip().lower()
+    if forced in {"full", "distilled"}:
+        return forced
+    if allow_quality_override and _get_backend() == "pipelines":
+        if _env_bool("FORCE_FULL_FOR_QUALITY", False):
+            return "full"
+        steps_value = getattr(config, "quality_steps", None)
+        if steps_value is not None:
+            try:
+                steps_value = int(steps_value)
+            except (TypeError, ValueError):
+                steps_value = None
+        if steps_value is not None and steps_value >= 12:
+            return "full"
+    return default_variant
+
+
+def _is_keyframe_pipeline(pipe: object) -> bool:
+    try:
+        module_name = pipe.__class__.__module__
+        class_name = pipe.__class__.__name__
+    except Exception:
+        return False
+    return "keyframe_interpolation" in module_name or "keyframe" in class_name.lower()
 
 
 def _log_vram(prefix: str) -> None:
@@ -1186,6 +1234,13 @@ def _write_commercial_mp4_from_frames(
     writer = None
     try:
         width, height = frames[0].size
+        if _ffmpeg_available():
+            try:
+                _write_commercial_mp4_to_path(frames, fps, temp_path)
+                _store_commercial_mp4(temp_path, stream_id)
+                return
+            except Exception:  # noqa: BLE001
+                LOGGER.warning("ffmpeg commercial mp4 encode failed; falling back to cv2 writer.")
         codecs = ("mp4v", "MJPG")
         for codec in codecs:
             fourcc = cv2.VideoWriter_fourcc(*codec)
@@ -1222,6 +1277,45 @@ def _write_commercial_mp4_to_path(
     writer = None
     try:
         width, height = frames[0].size
+        if _ffmpeg_available():
+            try:
+                cmd = [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-s",
+                    f"{width}x{height}",
+                    "-r",
+                    str(float(fps)),
+                    "-i",
+                    "-",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-profile:v",
+                    "baseline",
+                    "-level",
+                    "3.1",
+                    "-crf",
+                    "18",
+                    output_path,
+                ]
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                assert proc.stdin is not None
+                for frame in frames:
+                    rgb = np.array(frame.convert("RGB"))
+                    proc.stdin.write(rgb.tobytes())
+                proc.stdin.close()
+                _, stderr = proc.communicate(timeout=120)
+                if proc.returncode != 0:
+                    raise RuntimeError(stderr.decode(errors="ignore").strip() or "ffmpeg failed")
+                return
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("ffmpeg commercial mp4 encode failed; falling back to cv2: %s", exc)
         codecs = ("mp4v", "MJPG")
         for codec in codecs:
             fourcc = cv2.VideoWriter_fourcc(*codec)
@@ -2301,6 +2395,7 @@ def _generate_video_chunk(
     num_inference_steps: int,
     seed: int | None,
     images: list[tuple[str, int, float]] | None = None,
+    mode: str | None = None,
 ) -> Iterable[Image.Image]:
     _log_vram("chunk_start")
     signature = inspect.signature(pipe.__call__)
@@ -2309,6 +2404,14 @@ def _generate_video_chunk(
     width, height = _adjust_resolution_for_two_stage(pipe, output_mode, width, height)
     comfy_enabled = _comfy_enabled()
     stage2_enabled = comfy_enabled and _env_bool("LTX2_STAGE2_ENABLE", True)
+    mode_label = (mode or "").strip().lower()
+    if mode_label in {"fever", "mood"}:
+        disable_fever = mode_label == "fever" and _env_bool("LTX2_FEVER_DISABLE_STAGE2", True)
+        keyframe_block = _is_keyframe_pipeline(pipe) and not _env_bool("LTX2_KEYFRAME_STAGE2_ENABLE", False)
+        if disable_fever or keyframe_block:
+            stage2_enabled = False
+            if mode_label == "fever":
+                LOGGER.info("fever stage2 disabled: reason=stability")
     stage2_sigmas = _parse_manual_sigmas_env() if stage2_enabled else None
     kwargs = _build_pipeline_kwargs(
         pipe,
@@ -2868,7 +2971,7 @@ def _get_or_create_commercial_state(
             frames_per_chunk = 73
         fps = int(getattr(config, "fps", 24))
         target_frames = int(round(target_seconds * fps)) if target_seconds > 0 else frames_per_chunk
-        num_chunks = max(1, int(round(target_frames / float(frames_per_chunk))))
+        num_chunks = max(1, int(math.ceil(target_frames / float(frames_per_chunk))))
         state = CommercialState(
             seed=seed,
             prompt=prompt,
@@ -3006,11 +3109,6 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
     realtime_cfg = getattr(config, "prompt_strength", None)
     if realtime_cfg is None:
         realtime_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
-    steps_cap = getattr(config, "quality_steps", None)
-    if steps_cap is None:
-        steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
-    else:
-        steps_cap = int(steps_cap)
     reset_interval = _env_int_clamped("LTX2_CHAIN_RESET_INTERVAL", 0, min_value=0, max_value=10000)
     if _should_reset_chain("fever", cancel_event, stream_id, reset_interval):
         _set_chain_frame("fever", cancel_event, None, stream_id)
@@ -3030,9 +3128,17 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
                 guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id, base_cfg=realtime_cfg)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
-            num_inference_steps = int(10 + config.motion * 10)
-            if realtime:
-                num_inference_steps = min(num_inference_steps, steps_cap)
+            num_inference_steps = _resolve_fever_mood_steps(config, realtime=realtime)
+            LOGGER.info(
+                "Chunk settings: mode=%s steps_used=%s cfg_used=%.3f num_frames=%s fps=%s pipeline_mode=%s pipeline_variant=%s",
+                "fever",
+                num_inference_steps,
+                guidance_scale,
+                num_frames,
+                config.fps,
+                "diffusers",
+                None,
+            )
             frames = list(
                 _generate_diffusers_chunk(
                     pipe,
@@ -3055,7 +3161,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             LOGGER.exception("Continuity Studio diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
-    pipeline_variant = os.getenv("LTX2_COMMERCIAL_PIPELINE_VARIANT", "").strip().lower()
+    pipeline_variant = _resolve_pipeline_variant(config)
     adapter = _get_pipeline_adapter(config, pipeline_variant=pipeline_variant or None)
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
     prompt = _maybe_prompt_drift(config.prompt, allow_drift=prompt_drift_enabled)
@@ -3086,9 +3192,17 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             guidance_scale = _adaptive_cfg("fever", cancel_event, stream_id, base_cfg=realtime_cfg)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
-        num_inference_steps = int(10 + config.motion * 10)
-        if realtime:
-            num_inference_steps = min(num_inference_steps, steps_cap)
+        num_inference_steps = _resolve_fever_mood_steps(config, realtime=realtime)
+        LOGGER.info(
+            "Chunk settings: mode=%s steps_used=%s cfg_used=%.3f num_frames=%s fps=%s pipeline_mode=%s pipeline_variant=%s",
+            "fever",
+            num_inference_steps,
+            guidance_scale,
+            num_frames,
+            config.fps,
+            _get_pipeline_mode(),
+            pipeline_variant,
+        )
         chunk = adapter.generate_chunk(
             output_mode=output_mode,
             prompt=prompt,
@@ -3101,6 +3215,7 @@ def generate_fever_dream_chunk(config, cancel_event: threading.Event) -> list[Im
             num_inference_steps=num_inference_steps,
             seed=seed,
             images=images,
+            mode="fever",
         )
         frames = chunk.frames
         if drop_prefix > 0 and len(frames) > drop_prefix:
@@ -3248,7 +3363,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                 state.video_chunks.append(chunk_path)
                 state.last_output_path = chunk_path
                 audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
-                if audio_bytes and audio_ts > state.last_audio_ts:
+                if audio_bytes:
                     if _store_commercial_audio_chunk(stream_id, chunk_index, audio_bytes, state):
                         state.last_audio_ts = audio_ts
             state.chunks_generated += 1
@@ -3300,7 +3415,8 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
 
     pipe = None
     if commercial_pipeline != "comfy_equivalent":
-        pipe = _get_pipelines_pipe_or_status(config)
+        commercial_variant = os.getenv("LTX2_COMMERCIAL_PIPELINE_VARIANT", "").strip().lower() or None
+        pipe = _get_pipelines_pipe_or_status(config, pipeline_variant=commercial_variant)
         if pipe is None:
             return [render_status_frame("LTX-2 load failed", config.width, config.height)]
     if chunk_index == 1:
@@ -3417,7 +3533,7 @@ def generate_commercial_lock_chunk(config, cancel_event: threading.Event) -> lis
                         _store_commercial_audio_chunk(stream_id, chunk_index, audio_bytes, state)
             else:
                 audio_bytes, audio_ts = get_latest_audio_wav(stream_id)
-                if audio_bytes and audio_ts > state.last_audio_ts:
+                if audio_bytes:
                     if _store_commercial_audio_chunk(stream_id, chunk_index, audio_bytes, state):
                         state.last_audio_ts = audio_ts
         state.chunks_generated += 1
@@ -3509,11 +3625,6 @@ def generate_mood_mirror_chunk(
     realtime_cfg = getattr(config, "prompt_strength", None)
     if realtime_cfg is None:
         realtime_cfg = _env_float("LTX2_REALTIME_CFG", 1.0)
-    steps_cap = getattr(config, "quality_steps", None)
-    if steps_cap is None:
-        steps_cap = _env_int_clamped("LTX2_REALTIME_STEPS", 6, min_value=1, max_value=200)
-    else:
-        steps_cap = int(steps_cap)
     reset_interval = _env_int_clamped("LTX2_CHAIN_RESET_INTERVAL", 0, min_value=0, max_value=10000)
     if _should_reset_chain("mood", cancel_event, stream_id, reset_interval):
         _set_chain_frame("mood", cancel_event, None, stream_id)
@@ -3540,9 +3651,17 @@ def generate_mood_mirror_chunk(
                 guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id, base_cfg=realtime_cfg)
             negative_prompt = getattr(config, "negative_prompt", "") or ""
             negative_prompt = _build_negative_prompt(prompt, negative_prompt)
-            num_inference_steps = int(10 + config.motion * 10)
-            if realtime:
-                num_inference_steps = min(num_inference_steps, steps_cap)
+            num_inference_steps = _resolve_fever_mood_steps(config, realtime=realtime)
+            LOGGER.info(
+                "Chunk settings: mode=%s steps_used=%s cfg_used=%.3f num_frames=%s fps=%s pipeline_mode=%s pipeline_variant=%s",
+                "mood",
+                num_inference_steps,
+                guidance_scale,
+                num_frames,
+                config.fps,
+                "diffusers",
+                None,
+            )
             frames = list(
                 _generate_diffusers_chunk(
                     pipe,
@@ -3565,7 +3684,8 @@ def generate_mood_mirror_chunk(
             LOGGER.exception("Mood Mirror diffusers generation error: %s", exc)
             return [render_status_frame("Generation error", config.width, config.height)]
 
-    adapter = _get_pipeline_adapter(config)
+    pipeline_variant = _resolve_pipeline_variant(config)
+    adapter = _get_pipeline_adapter(config, pipeline_variant=pipeline_variant or None)
     stage_width, stage_height, num_frames = _resolve_chunk_settings(config)
     camera_frame, mood_state = latest_camera_state()
     if camera_frame is None:
@@ -3606,9 +3726,17 @@ def generate_mood_mirror_chunk(
             guidance_scale = _adaptive_cfg("mood", cancel_event, stream_id, base_cfg=realtime_cfg)
         negative_prompt = getattr(config, "negative_prompt", "") or ""
         negative_prompt = _build_negative_prompt(prompt, negative_prompt)
-        num_inference_steps = int(10 + config.motion * 10)
-        if realtime:
-            num_inference_steps = min(num_inference_steps, steps_cap)
+        num_inference_steps = _resolve_fever_mood_steps(config, realtime=realtime)
+        LOGGER.info(
+            "Chunk settings: mode=%s steps_used=%s cfg_used=%.3f num_frames=%s fps=%s pipeline_mode=%s pipeline_variant=%s",
+            "mood",
+            num_inference_steps,
+            guidance_scale,
+            num_frames,
+            config.fps,
+            _get_pipeline_mode(),
+            pipeline_variant,
+        )
         chunk = adapter.generate_chunk(
             output_mode=output_mode,
             prompt=prompt,
@@ -3621,6 +3749,7 @@ def generate_mood_mirror_chunk(
             num_inference_steps=num_inference_steps,
             seed=seed,
             images=images,
+            mode="mood",
         )
         frames = chunk.frames
         if drop_prefix > 0 and len(frames) > drop_prefix:

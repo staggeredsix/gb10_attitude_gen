@@ -914,7 +914,7 @@
             video.src = `/api/commercial/latest.mp4?stream=${i}&ts=${Date.now()}`;
             video.controls = true;
             video.autoplay = true;
-            video.loop = true;
+            video.loop = false;
             video.playsInline = true;
             video.preload = "auto";
             video.style.width = "100%";
@@ -955,10 +955,10 @@
               continue;
             }
             commercialLastUpdated[i] = data.updated_at || Date.now();
-            const currentTime = video.currentTime || 0;
             video.src = `/api/commercial/latest.mp4?stream=${i}&ts=${Date.now()}`;
             video.load();
-            video.currentTime = currentTime;
+            video.currentTime = 0;
+            video.loop = Boolean(data.done);
             await video.play();
             if (data.done) {
               stopCommercialRefresh();
