@@ -41,6 +41,7 @@ from ltx2_backend import (
     generate_v2v_video,
     get_latest_audio_wav,
     get_latest_commercial_mp4,
+    normalize_num_frames,
     set_audio_stream_id,
     log_backend_configuration,
     render_status_frame,
@@ -878,7 +879,7 @@ async def v2v_endpoint(
     max_frames_env = int(os.getenv("LTX2_V2V_MAX_FRAMES", "257"))
     total_max_frames_env = int(os.getenv("LTX2_V2V_TOTAL_MAX_FRAMES", "8640"))
     max_chunk_frames = _round_down_v2v_frames(max_frames_env) if max_frames_env > 0 else None
-    adjusted_frames = _adjust_v2v_frames(num_frames)
+    adjusted_frames = normalize_num_frames(num_frames, label="v2v_request")
     if total_max_frames_env > 0 and adjusted_frames > total_max_frames_env:
         max_seconds = total_max_frames_env / float(f or 1)
         raise HTTPException(
